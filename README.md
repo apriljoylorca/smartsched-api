@@ -14,11 +14,11 @@ Short description: Spring Boot backend that exposes REST endpoints for managing 
 ### For Render Deployment:
 
 1. **`JWT_SECRET`** (REQUIRED)
-   - Must be a valid Base64-encoded string
-   - Must be at least 32 bytes (256 bits) after decoding
-   - Generate using: `openssl rand -base64 32`
-   - See `GENERATE_JWT_SECRET.md` for detailed instructions
-   - ⚠️ **Common Error**: If you see "Illegal base64 character", your secret is not properly Base64 encoded
+   - Can be **any string** - no Base64 encoding needed!
+   - Minimum 8 characters recommended
+   - 16+ characters recommended for better security
+   - Examples: `my-super-secret-key-12345` or `Smartsched2024!SecureKey`
+   - The system automatically converts it to a secure 32-byte key
 
 2. **`SPRING_DATA_MONGODB_URI`** (REQUIRED)
    - MongoDB connection string

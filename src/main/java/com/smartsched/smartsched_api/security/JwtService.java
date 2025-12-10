@@ -14,13 +14,15 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.MalformedJwtException;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.UnsupportedJwtException;
-import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import io.jsonwebtoken.security.SignatureException;
 
@@ -140,55 +142,43 @@ public class JwtService {
 
     /**
      * Gets the signing key used for JWT validation and generation.
+     * Accepts any string and automatically converts it to a secure 32-byte key.
      */
     private Key getSigningKey() {
         if (secretKeyString == null || secretKeyString.isEmpty()) {
-             logger.error("FATAL: JWT Secret Key (jwt.secret) is not configured in application properties!");
-             throw new IllegalArgumentException("JWT Secret Key is missing or empty in application properties.");
+             logger.error("FATAL: JWT Secret Key (jwt.secret) is not configured!");
+             throw new IllegalArgumentException("JWT Secret Key is missing. Please set JWT_SECRET environment variable.");
         }
         
-        // Log secret info (masked) for debugging
-        String maskedSecret = secretKeyString.length() > 10 
-            ? secretKeyString.substring(0, 5) + "..." + secretKeyString.substring(secretKeyString.length() - 5)
-            : "****";
-        logger.info("JWT Secret Key length: {}, masked: {}", secretKeyString.length(), maskedSecret);
-        
-        // Check for common invalid characters
-        if (secretKeyString.contains("-") || secretKeyString.contains("_") || secretKeyString.contains(" ")) {
-            logger.error("FATAL: JWT Secret Key contains invalid characters. Base64 only allows: A-Z, a-z, 0-9, +, /, and =");
-            logger.error("Secret appears to not be Base64 encoded. Please generate a proper Base64 secret.");
-            throw new IllegalArgumentException(
-                "JWT Secret Key contains invalid Base64 characters. " +
-                "The secret must be Base64 encoded. Valid Base64 characters are: A-Z, a-z, 0-9, +, /, and = for padding. " +
-                "Generate a new secret using: openssl rand -base64 32"
-            );
+        // Ensure minimum length for security
+        if (secretKeyString.length() < 8) {
+            logger.warn("JWT Secret is too short ({} characters). Using anyway, but consider using at least 16 characters for better security.", secretKeyString.length());
         }
         
         try {
-            byte[] keyBytes = Decoders.BASE64.decode(secretKeyString);
-             if (keyBytes.length < 32) {
-                 logger.error("FATAL: JWT Secret Key is too short ({} bytes). It MUST be at least 32 bytes for HS256.", keyBytes.length);
-                 throw new IllegalArgumentException("JWT Secret Key is too short. Must be at least 32 bytes (256 bits) after Base64 decoding.");
-             }
-            logger.info("JWT Secret Key decoded successfully. Key length: {} bytes", keyBytes.length);
-            return Keys.hmacShaKeyFor(keyBytes);
-        } catch (IllegalArgumentException e) {
-             if (e.getMessage().contains("Illegal base64")) {
-                 logger.error("FATAL: Invalid Base64 encoding for JWT Secret Key.");
-                 logger.error("The JWT_SECRET environment variable must be a valid Base64 string.");
-                 logger.error("Generate a proper secret using: openssl rand -base64 32");
-                 logger.error("Or use an online Base64 encoder with a 32+ byte random string.");
-                 throw new IllegalArgumentException(
-                     "Invalid Base64 encoding for JWT Secret Key. " +
-                     "The JWT_SECRET environment variable must be a valid Base64-encoded string (at least 32 bytes). " +
-                     "Generate one using: openssl rand -base64 32",
-                     e
-                 );
-             }
-             throw e;
+            // Convert any string to a secure 32-byte key using SHA-256
+            // This allows users to use any string without worrying about Base64 encoding
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(secretKeyString.getBytes());
+            
+            // If hash is less than 32 bytes (shouldn't happen with SHA-256), pad it
+            if (hash.length < 32) {
+                byte[] padded = new byte[32];
+                System.arraycopy(hash, 0, padded, 0, hash.length);
+                // Repeat the hash to fill remaining bytes
+                for (int i = hash.length; i < 32; i++) {
+                    padded[i] = hash[i % hash.length];
+                }
+                hash = padded;
+            }
+            
+            return Keys.hmacShaKeyFor(hash);
+        } catch (NoSuchAlgorithmException e) {
+            logger.error("FATAL: SHA-256 algorithm not available: {}", e.getMessage());
+            throw new RuntimeException("SHA-256 algorithm not available", e);
         } catch (Exception e) {
-             logger.error("FATAL: Unexpected error decoding JWT Secret Key: {}", e.getMessage(), e);
-             throw new IllegalArgumentException("Failed to decode JWT Secret Key: " + e.getMessage(), e);
+            logger.error("FATAL: Unexpected error generating JWT signing key: {}", e.getMessage(), e);
+            throw new RuntimeException("Failed to generate JWT signing key: " + e.getMessage(), e);
         }
     }
 }
