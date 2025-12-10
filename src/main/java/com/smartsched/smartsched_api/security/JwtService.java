@@ -146,16 +146,49 @@ public class JwtService {
              logger.error("FATAL: JWT Secret Key (jwt.secret) is not configured in application properties!");
              throw new IllegalArgumentException("JWT Secret Key is missing or empty in application properties.");
         }
+        
+        // Log secret info (masked) for debugging
+        String maskedSecret = secretKeyString.length() > 10 
+            ? secretKeyString.substring(0, 5) + "..." + secretKeyString.substring(secretKeyString.length() - 5)
+            : "****";
+        logger.info("JWT Secret Key length: {}, masked: {}", secretKeyString.length(), maskedSecret);
+        
+        // Check for common invalid characters
+        if (secretKeyString.contains("-") || secretKeyString.contains("_") || secretKeyString.contains(" ")) {
+            logger.error("FATAL: JWT Secret Key contains invalid characters. Base64 only allows: A-Z, a-z, 0-9, +, /, and =");
+            logger.error("Secret appears to not be Base64 encoded. Please generate a proper Base64 secret.");
+            throw new IllegalArgumentException(
+                "JWT Secret Key contains invalid Base64 characters. " +
+                "The secret must be Base64 encoded. Valid Base64 characters are: A-Z, a-z, 0-9, +, /, and = for padding. " +
+                "Generate a new secret using: openssl rand -base64 32"
+            );
+        }
+        
         try {
             byte[] keyBytes = Decoders.BASE64.decode(secretKeyString);
              if (keyBytes.length < 32) {
                  logger.error("FATAL: JWT Secret Key is too short ({} bytes). It MUST be at least 32 bytes for HS256.", keyBytes.length);
                  throw new IllegalArgumentException("JWT Secret Key is too short. Must be at least 32 bytes (256 bits) after Base64 decoding.");
              }
+            logger.info("JWT Secret Key decoded successfully. Key length: {} bytes", keyBytes.length);
             return Keys.hmacShaKeyFor(keyBytes);
         } catch (IllegalArgumentException e) {
-             logger.error("FATAL: Invalid Base64 encoding for JWT Secret Key (jwt.secret): {}", e.getMessage());
-             throw new IllegalArgumentException("Invalid Base64 encoding for JWT Secret Key in application properties.", e);
+             if (e.getMessage().contains("Illegal base64")) {
+                 logger.error("FATAL: Invalid Base64 encoding for JWT Secret Key.");
+                 logger.error("The JWT_SECRET environment variable must be a valid Base64 string.");
+                 logger.error("Generate a proper secret using: openssl rand -base64 32");
+                 logger.error("Or use an online Base64 encoder with a 32+ byte random string.");
+                 throw new IllegalArgumentException(
+                     "Invalid Base64 encoding for JWT Secret Key. " +
+                     "The JWT_SECRET environment variable must be a valid Base64-encoded string (at least 32 bytes). " +
+                     "Generate one using: openssl rand -base64 32",
+                     e
+                 );
+             }
+             throw e;
+        } catch (Exception e) {
+             logger.error("FATAL: Unexpected error decoding JWT Secret Key: {}", e.getMessage(), e);
+             throw new IllegalArgumentException("Failed to decode JWT Secret Key: " + e.getMessage(), e);
         }
     }
 }
