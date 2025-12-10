@@ -50,7 +50,7 @@ public class SecurityConfig {
     @Autowired
     private ApplicationContext applicationContext;
 
-    @Value("#{'${cors.allowed-origins:http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001}'.split(',')}")
+    @Value("#{'${cors.allowed-origins:https://smartsched-client.vercel.app,http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001}'.split(',')}")
     private java.util.List<String> allowedOrigins;
 
     @Bean
