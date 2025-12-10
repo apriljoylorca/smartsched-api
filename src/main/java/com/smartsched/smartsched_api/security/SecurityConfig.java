@@ -61,7 +61,7 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/**").permitAll()
+                        .requestMatchers("/", "/api/auth/**", "/api/health/**").permitAll()
                         .requestMatchers("/api/users/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/api/teachers/**", "/api/sections/**", "/api/classrooms/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/api/teachers/**", "/api/sections/**", "/api/classrooms/**", "/api/schedules/problem/**").hasRole("ADMIN")
@@ -135,6 +135,7 @@ public class SecurityConfig {
         configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/api/**", configuration);
+        source.registerCorsConfiguration("/", configuration); // Allow CORS for root path
         return source;
     }
 }
