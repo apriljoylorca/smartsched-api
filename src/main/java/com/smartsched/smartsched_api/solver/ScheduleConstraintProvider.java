@@ -95,7 +95,8 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory),
                 // --- NEW CONSTRAINTS FOR TEACHER MAJOR SUBJECTS ---
                 majorSubjectsSameTeacherSequential(constraintFactory),
-                maxThreeMajorSubjectsPerDayPerTeacher(constraintFactory)
+                maxThreeMajorSubjectsPerDayPerTeacher(constraintFactory),
+                sameMajorSubjectSameTeacherSameClassroom(constraintFactory)
         };
     }
     
@@ -903,7 +904,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
      */
     private Constraint majorSubjectsSameTeacherSequential(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
-                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
+                .filter(alloc -> alloc.isMajor() && alloc.getTimeslot() != null && 
                                alloc.getTeacher() != null)
                 .join(Allocation.class,
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
@@ -944,8 +945,8 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     }
 
     /**
-     * Maximum 3 major subjects per day per teacher
-     * Rule: Teachers should only have 3 major subjects scheduled per day
+     * Maximum 6 major subjects per day per teacher
+     * Rule: Teachers should only have 6 major subjects scheduled per day
      */
     private Constraint maxThreeMajorSubjectsPerDayPerTeacher(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
@@ -956,12 +957,45 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     alloc -> alloc.getTimeslot().getDayOfWeek(),
                     ConstraintCollectors.count()
                 )
-                .filter((teacher, day, count) -> count > 3)
+                .filter((teacher, day, count) -> count > 6)
                 .penalize(HardSoftScore.ONE_HARD, (teacher, day, count) -> {
                     logger.warn("!!! MAX MAJOR SUBJECTS PER TEACHER VIOLATION: Teacher {} has {} major subjects on {}", 
                                teacher.getName(), count, day);
-                    return (int)(count - 3); // Penalty increases with each subject over 3
+                    return (int)(count - 6); // Penalty increases with each subject over 6
                 })
-                .asConstraint("Maximum 3 major subjects per day per teacher");
+                .asConstraint("Maximum 6 major subjects per day per teacher");
+    }
+
+    /**
+     * Same major subject with same teacher must be at the same classroom/laboratory
+     * Rule: If a teacher teaches the same major subject (across different sections), it must be in the same classroom
+     */
+    private Constraint sameMajorSubjectSameTeacherSameClassroom(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
+                               alloc.getTeacher() != null && alloc.getClassroom() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSubjectCode))
+                .filter((alloc1, alloc2) -> {
+                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getClassroom() == null || alloc2.getClassroom() == null) return false;
+                    
+                    // Check if they are in different classrooms - this is a violation
+                    boolean differentClassroom = !alloc1.getClassroom().getId().equals(alloc2.getClassroom().getId());
+                    
+                    if (differentClassroom) {
+                        logger.warn("!!! SAME MAJOR SUBJECT DIFFERENT CLASSROOM VIOLATION: {} for teacher {} - {} vs {}", 
+                                   alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
+                                   alloc1.getClassroom().getName(), alloc2.getClassroom().getName());
+                    }
+                    return differentClassroom;
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! PENALIZING SAME MAJOR SUBJECT DIFFERENT CLASSROOM: {} for teacher {}", 
+                               alloc1.getSubjectCode(), alloc1.getTeacher().getName());
+                    return 1;
+                })
+                .asConstraint("Same major subject same teacher same classroom");
     }
 }

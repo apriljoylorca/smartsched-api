@@ -151,11 +151,18 @@ public class SchedulingService {
             if(duration < 0) duration += 1440; // 24 * 60
 
             if (classroom != null && section != null && timeslot != null && duration > 0) {
+                 // Determine if this is a major subject by checking if it requires a lab
+                 // For now, we'll need to check the subject code or use a different method
+                 // Since we don't have isMajor in Schedule, we'll set it based on classroom type
+                 boolean isMajor = classroom.getType() != null && 
+                                  (classroom.getType().toLowerCase().contains("lab") || 
+                                   classroom.getType().toLowerCase().contains("laboratory"));
+                 
                  Allocation pinnedAllocation = new Allocation(
                     nextAllocationId.getAndIncrement(),
                     existing.getSubjectCode(), existing.getSubjectName(),
                     teacher, section, duration,
-                    false, // isMajor is irrelevant for pinned allocations
+                    isMajor, // Set isMajor based on classroom type for pinned allocations
                     true // --- THIS IS PINNED ---
                 );
                 pinnedAllocation.setTimeslot(timeslot);
@@ -201,6 +208,16 @@ public class SchedulingService {
             logger.info("!!! Solver finished for problemId: {}. FINAL SCORE received: {} !!!", problemId, finalScore);
             logger.warn("@@@ FINAL SCORE ANALYSIS: Hard score={}, Soft score={}, Is feasible={}", 
                        finalScore.hardScore(), finalScore.softScore(), finalScore.isFeasible());
+            
+            // Additional validation: manually check for overlaps
+            boolean hasOverlaps = validateSolutionForOverlaps(finalBestSolution);
+            if (hasOverlaps) {
+                logger.error("!!! ERROR: Manual validation detected OVERLAPS in solution! !!!");
+                logger.error("!!! REJECTING SOLUTION - Will not save schedules with overlaps !!!");
+                solverStatusMap.put(problemId, SolverStatus.NOT_SOLVING);
+                return;
+            }
+            
             if (!finalScore.isFeasible()) {
                 logger.error("!!! ERROR: Solution has HARD CONSTRAINT VIOLATIONS! Hard score: {} !!!", finalScore.hardScore());
                 logger.error("!!! REJECTING SOLUTION - Will not save schedules with constraint violations !!!");
@@ -379,5 +396,82 @@ public class SchedulingService {
         
         logger.info("Generated {} optimized timeslots (1.5-hour slots) for Mon-Sat, 8:00-12:30, 13:00-20:30", timeslots.size());
         return timeslots;
+    }
+
+    /**
+     * Manual validation to check for overlaps in the solution
+     * This is a safety check in addition to constraint-based validation
+     */
+    private boolean validateSolutionForOverlaps(ScheduleSolution solution) {
+        if (solution.getAllocations() == null) return false;
+        
+        // Group by teacher and check for overlaps
+        Map<String, List<Allocation>> byTeacher = 
+            solution.getAllocations().stream()
+                .filter(a -> a.getTeacher() != null && a.getTimeslot() != null)
+                .collect(Collectors.groupingBy(a -> a.getTeacher().getId()));
+        
+        for (Map.Entry<String, List<Allocation>> entry : byTeacher.entrySet()) {
+            List<Allocation> allocs = entry.getValue();
+            if (hasOverlapInList(allocs)) {
+                logger.error("!!! VALIDATION: Teacher {} has overlapping allocations!", entry.getKey());
+                return true;
+            }
+        }
+        
+        // Group by classroom and check for overlaps
+        Map<String, List<Allocation>> byClassroom = 
+            solution.getAllocations().stream()
+                .filter(a -> a.getClassroom() != null && a.getTimeslot() != null)
+                .collect(Collectors.groupingBy(a -> a.getClassroom().getId()));
+        
+        for (Map.Entry<String, List<Allocation>> entry : byClassroom.entrySet()) {
+            List<Allocation> allocs = entry.getValue();
+            if (hasOverlapInList(allocs)) {
+                logger.error("!!! VALIDATION: Classroom {} has overlapping allocations!", entry.getKey());
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private boolean hasOverlapInList(List<Allocation> allocations) {
+        if (allocations.size() <= 1) return false;
+        
+        // Group by day
+        Map<DayOfWeek, List<Allocation>> byDay = 
+            allocations.stream()
+                .filter(a -> a.getTimeslot() != null && a.getTimeslot().getDayOfWeek() != null)
+                .collect(Collectors.groupingBy(a -> a.getTimeslot().getDayOfWeek()));
+        
+        for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : byDay.entrySet()) {
+            List<Allocation> dayAllocs = dayEntry.getValue();
+            if (dayAllocs.size() <= 1) continue;
+            
+            // Sort by start time
+            dayAllocs.sort((a, b) -> a.getTimeslot().getStartTime().compareTo(b.getTimeslot().getStartTime()));
+            
+            // Check adjacent pairs
+            for (int i = 0; i < dayAllocs.size() - 1; i++) {
+                Allocation current = dayAllocs.get(i);
+                Allocation next = dayAllocs.get(i + 1);
+                
+                LocalTime currentStart = current.getTimeslot().getStartTime();
+                LocalTime currentEnd = currentStart.plusMinutes(current.getDurationInMinutes());
+                LocalTime nextStart = next.getTimeslot().getStartTime();
+                
+                // Check for overlap
+                if (nextStart.isBefore(currentEnd) || nextStart.equals(currentStart)) {
+                    logger.error("!!! VALIDATION OVERLAP: {} ({} {}-{}) overlaps with {} ({} {}-{})", 
+                               current.getSubjectCode(), dayEntry.getKey(), currentStart, currentEnd,
+                               next.getSubjectCode(), dayEntry.getKey(), nextStart, 
+                               nextStart.plusMinutes(next.getDurationInMinutes()));
+                    return true;
+                }
+            }
+        }
+        
+        return false;
     }
 }
