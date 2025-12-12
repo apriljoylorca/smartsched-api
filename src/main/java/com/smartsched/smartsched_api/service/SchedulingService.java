@@ -211,7 +211,9 @@ public class SchedulingService {
                        finalScore.hardScore(), finalScore.softScore(), finalScore.isFeasible());
             
             // Additional validation: manually check for overlaps
+            logger.info("@@@ saveSolution: Starting validation...");
             boolean hasOverlaps = validateSolutionForOverlaps(finalBestSolution);
+            logger.info("@@@ saveSolution: Validation result: hasOverlaps={}", hasOverlaps);
             if (hasOverlaps) {
                 logger.error("!!! ERROR: Manual validation detected OVERLAPS in solution! !!!");
                 logger.error("!!! REJECTING SOLUTION - Will not save schedules with overlaps !!!");
@@ -441,17 +443,25 @@ public class SchedulingService {
         
         // Check rule: Same major subject + same teacher + different sections must be on different days
         // If violation found, attempt automatic reassignment
-        if (hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(solution.getAllocations())) {
+        logger.info("@@@ VALIDATION: Checking for same major subject same teacher different sections violations...");
+        boolean hasViolation = hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(solution.getAllocations());
+        logger.info("@@@ VALIDATION RESULT: hasViolation={}", hasViolation);
+        
+        if (hasViolation) {
             logger.warn("!!! VALIDATION: Same major subject with same teacher but different sections scheduled on same day!");
             logger.info("!!! Attempting automatic reassignment to fix violation...");
             boolean fixed = fixSameMajorSubjectSameTeacherDifferentSectionsViolations(solution);
+            logger.info("@@@ REASSIGNMENT RESULT: fixed={}", fixed);
             if (!fixed) {
                 logger.error("!!! ERROR: Could not automatically fix violations!");
                 return true; // Still has violations after fix attempt
             } else {
                 logger.info("!!! SUCCESS: Violations automatically fixed by reassignment!");
                 // Re-validate to ensure no new conflicts were created
-                return validateSolutionForOverlaps(solution);
+                logger.info("@@@ RE-VALIDATING after reassignment...");
+                boolean stillHasViolations = validateSolutionForOverlaps(solution);
+                logger.info("@@@ RE-VALIDATION RESULT: stillHasViolations={}", stillHasViolations);
+                return stillHasViolations;
             }
         }
         
@@ -463,7 +473,12 @@ public class SchedulingService {
      * by reassigning one section to a different day with the same time slots
      */
     private boolean fixSameMajorSubjectSameTeacherDifferentSectionsViolations(ScheduleSolution solution) {
-        if (solution.getAllocations() == null) return false;
+        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: ENTRY");
+        
+        if (solution.getAllocations() == null) {
+            logger.error("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: No allocations!");
+            return false;
+        }
         
         // Get all timeslots from the solution
         List<Timeslot> allTimeslots = solution.getTimeslots();
@@ -472,15 +487,20 @@ public class SchedulingService {
             return false;
         }
         
-        // Group by teacher and subject code
+        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: timeslotsCount={}", allTimeslots.size());
+        
+        // Group by teacher and subject code - include ALL allocations (pinned and unpinned) for detection
+        // But we'll only reassign unpinned ones
         Map<String, Map<String, List<Allocation>>> byTeacherAndSubject = 
             solution.getAllocations().stream()
                 .filter(a -> a.isMajor() && a.getTeacher() != null && a.getSubjectCode() != null && 
-                           a.getSection() != null && a.getTimeslot() != null && !a.isPinned())
+                           a.getSection() != null && a.getTimeslot() != null)
                 .collect(Collectors.groupingBy(
                     a -> a.getTeacher().getId(),
                     Collectors.groupingBy(Allocation::getSubjectCode)
                 ));
+        
+        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: teacherSubjectGroups={}", byTeacherAndSubject.size());
         
         boolean anyFixed = false;
         
@@ -499,12 +519,18 @@ public class SchedulingService {
                 Map<DayOfWeek, List<Allocation>> byDay = allocs.stream()
                     .collect(Collectors.groupingBy(a -> a.getTimeslot().getDayOfWeek()));
                 
+                logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: Grouped by day for subject {} teacher {}", 
+                           subjectEntry.getKey(), teacherEntry.getKey());
+                
                 // Find days with multiple sections
                 for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : byDay.entrySet()) {
                     List<Allocation> dayAllocs = dayEntry.getValue();
                     Set<String> sectionsOnThisDay = dayAllocs.stream()
                         .map(a -> a.getSection().getId())
                         .collect(Collectors.toSet());
+                    
+                    logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: Day {} has sections {}", 
+                               dayEntry.getKey(), sectionsOnThisDay);
                     
                     if (sectionsOnThisDay.size() > 1) {
                         // Conflict found - need to reassign one section
@@ -513,44 +539,80 @@ public class SchedulingService {
                         
                         // Get the start time from one of the allocations (they should have same time)
                         LocalTime targetStartTime = dayAllocs.get(0).getTimeslot().getStartTime();
+                        logger.info("@@@ Target start time for reassignment: {}", targetStartTime);
                         
                         // Find a different day with the same start time available
                         DayOfWeek newDay = findAvailableDayForReassignment(
                             allTimeslots, dayEntry.getKey(), targetStartTime, 
                             solution.getAllocations(), dayAllocs.get(0).getTeacher().getId());
                         
+                        logger.info("@@@ Found new day for reassignment: {}", newDay);
+                        
                         if (newDay == null) {
                             logger.error("!!! Could not find available day for reassignment!");
                             return false;
                         }
                         
-                        // Reassign all allocations from the second section to the new day
-                        // Keep the first section on the original day
-                        // Reassign the section that appears later in the list
+                        // Reassign all allocations from one section to the new day
+                        // Priority: Reassign unpinned allocations (the section being solved)
+                        // If all are pinned, try to reassign the second section
                         List<String> sectionList = new ArrayList<>(sectionsOnThisDay);
-                        if (sectionList.size() > 1) {
-                            final String sectionToReassign = sectionList.get(1); // Reassign second section
-                            
-                            // Find all allocations for this section on this day
-                            List<Allocation> toReassign = dayAllocs.stream()
-                                .filter(a -> a.getSection().getId().equals(sectionToReassign))
+                        List<Allocation> toReassign = null;
+                        String foundSectionId = null;
+                        
+                        // First, try to find a section with unpinned allocations
+                        for (String sectionId : sectionList) {
+                            final String currentSectionId = sectionId;
+                            List<Allocation> unpinnedForSection = dayAllocs.stream()
+                                .filter(a -> a.getSection().getId().equals(currentSectionId) && !a.isPinned())
                                 .collect(Collectors.toList());
                             
-                            // Reassign each allocation
-                            for (Allocation alloc : toReassign) {
-                                Timeslot newTimeslot = findTimeslotForReassignment(
-                                    allTimeslots, newDay, targetStartTime, alloc.getDurationInMinutes());
-                                
-                                if (newTimeslot != null) {
-                                    logger.info("!!! REASSIGNING: {} for section {} from {} {} to {} {}", 
-                                              alloc.getSubjectCode(), alloc.getSection().getSectionName(),
-                                              dayEntry.getKey(), targetStartTime, newDay, targetStartTime);
-                                    alloc.setTimeslot(newTimeslot);
-                                    anyFixed = true;
-                                } else {
-                                    logger.error("!!! Could not find timeslot for reassignment!");
-                                    return false;
-                                }
+                            if (!unpinnedForSection.isEmpty()) {
+                                foundSectionId = currentSectionId;
+                                toReassign = unpinnedForSection;
+                                logger.info("@@@ Found unpinned section to reassign: {}", foundSectionId);
+                                break;
+                            }
+                        }
+                        
+                        // If no unpinned allocations found, try the second section (might be partially unpinned)
+                        if (foundSectionId == null && sectionList.size() > 1) {
+                            final String secondSectionId = sectionList.get(1);
+                            foundSectionId = secondSectionId;
+                            toReassign = dayAllocs.stream()
+                                .filter(a -> a.getSection().getId().equals(secondSectionId) && !a.isPinned())
+                                .collect(Collectors.toList());
+                            logger.info("@@@ Trying second section: {}", foundSectionId);
+                        }
+                        
+                        if (foundSectionId == null || toReassign == null || toReassign.isEmpty()) {
+                            logger.warn("@@@ No unpinned allocations to reassign. All sections may be pinned.");
+                            logger.warn("@@@ Sections on this day: {}", sectionList);
+                            logger.warn("@@@ Pinned status: {}", dayAllocs.stream()
+                                .collect(Collectors.toMap(
+                                    a -> a.getSection().getId(),
+                                    Allocation::isPinned,
+                                    (v1, v2) -> v1
+                                )));
+                            continue; // Skip if all are pinned
+                        }
+                        
+                        logger.info("@@@ Reassigning section: {} ({} allocations)", foundSectionId, toReassign.size());
+                        
+                        // Reassign each allocation
+                        for (Allocation alloc : toReassign) {
+                            Timeslot newTimeslot = findTimeslotForReassignment(
+                                allTimeslots, newDay, targetStartTime, alloc.getDurationInMinutes());
+                            
+                            if (newTimeslot != null) {
+                                logger.info("!!! REASSIGNING: {} for section {} from {} {} to {} {}", 
+                                          alloc.getSubjectCode(), alloc.getSection().getSectionName(),
+                                          dayEntry.getKey(), targetStartTime, newDay, targetStartTime);
+                                alloc.setTimeslot(newTimeslot);
+                                anyFixed = true;
+                            } else {
+                                logger.error("!!! Could not find timeslot for reassignment! Day={}, Time={}", newDay, targetStartTime);
+                                return false;
                             }
                         }
                     }
@@ -558,6 +620,7 @@ public class SchedulingService {
             }
         }
         
+        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: EXIT, anyFixed={}", anyFixed);
         return anyFixed;
     }
     
