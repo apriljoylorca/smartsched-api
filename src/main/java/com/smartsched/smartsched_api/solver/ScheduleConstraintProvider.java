@@ -133,6 +133,14 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
             // Sort by start time for this day
             dayAllocations.sort((a, b) -> a.getTimeslot().getStartTime().compareTo(b.getTimeslot().getStartTime()));
             
+            // #region agent log
+            logDebug("A", "ScheduleConstraintProvider.hasOverlap:DAY_CHECK", "Checking day for overlaps", Map.of(
+                "day", dayEntry.getKey().toString(),
+                "allocationCount", dayAllocations.size(),
+                "allocations", dayAllocations.stream().map(a -> a.getSubjectCode() + "(" + (a.isPinned() ? "PINNED" : "NEW") + ")").collect(java.util.stream.Collectors.joining(","))
+            ));
+            // #endregion
+            
             // Check for overlaps within this day
             for (int i = 0; i < dayAllocations.size() - 1; i++) {
                 Allocation current = dayAllocations.get(i);
@@ -160,30 +168,22 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     ));
                     // #endregion
                     
-                    // Check if there's an overlap: next starts before current ends (on the same day)
-                    if (nextStart.isBefore(currentEnd)) {
+                    // Check if there's an overlap: next starts before current ends OR they start at the same time (on the same day)
+                    // FIX: Changed from isBefore() to include exact overlaps (same start time)
+                    if (nextStart.isBefore(currentEnd) || nextStart.equals(currentStart)) {
                         logger.warn("!!! OVERLAP DETECTED: {} ({} {} - {}) overlaps with {} ({} {} - {})", 
                                    current.getSubjectCode(), current.getTimeslot().getDayOfWeek(), currentStart, currentEnd,
                                    next.getSubjectCode(), next.getTimeslot().getDayOfWeek(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
                         // #region agent log
-                        logDebug("A", "ScheduleConstraintProvider.hasOverlap:OVERLAP_FOUND", "Overlap detected via isBefore", Map.of(
+                        logDebug("A", "ScheduleConstraintProvider.hasOverlap:OVERLAP_FOUND", "Overlap detected", Map.of(
                             "currentSubject", current.getSubjectCode(),
                             "nextSubject", next.getSubjectCode(),
-                            "day", dayEntry.getKey().toString()
+                            "day", dayEntry.getKey().toString(),
+                            "isExactOverlap", isExactOverlap
                         ));
                         // #endregion
                         return true;
                     }
-                    // #region agent log
-                    if (isExactOverlap) {
-                        logDebug("A", "ScheduleConstraintProvider.hasOverlap:EXACT_OVERLAP_MISSED", "Exact overlap missed by isBefore check", Map.of(
-                            "currentSubject", current.getSubjectCode(),
-                            "nextSubject", next.getSubjectCode(),
-                            "day", dayEntry.getKey().toString(),
-                            "startTime", currentStart.toString()
-                        ));
-                    }
-                    // #endregion
                 } catch (Exception e) {
                     logger.error("Error calculating overlap for allocations: {}", e.getMessage());
                 }
@@ -245,26 +245,20 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                         ));
                         // #endregion
                         
-                        // If next starts before current ends (on the same day), there's an overlap
-                        if (nextStart.isBefore(currentEnd)) {
+                        // If next starts before current ends OR they start at the same time (on the same day), there's an overlap
+                        // FIX: Changed from isBefore() to include exact overlaps (same start time)
+                        if (nextStart.isBefore(currentEnd) || nextStart.equals(currentStart)) {
                             overlapCount++;
                             logger.warn("!!! PENALIZING Overlap: {} ({} {} - {}) overlaps with {} ({} {} - {})", 
                                        current.getSubjectCode(), current.getTimeslot().getDayOfWeek(), currentStart, currentEnd,
                                        next.getSubjectCode(), next.getTimeslot().getDayOfWeek(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
                             // #region agent log
                             logDebug("C", "ScheduleConstraintProvider.calculateOverlapPenalty:OVERLAP_COUNTED", "Overlap counted", Map.of(
-                                "overlapCount", overlapCount
+                                "overlapCount", overlapCount,
+                                "isExactOverlap", isExactOverlap
                             ));
                             // #endregion
                         } else {
-                            // #region agent log
-                            if (isExactOverlap) {
-                                logDebug("C", "ScheduleConstraintProvider.calculateOverlapPenalty:EXACT_OVERLAP_MISSED", "Exact overlap missed in penalty calculation", Map.of(
-                                    "currentSubject", current.getSubjectCode(),
-                                    "nextSubject", next.getSubjectCode()
-                                ));
-                            }
-                            // #endregion
                             // Since allocations are sorted by start time, we can break here
                             break;
                         }
@@ -283,8 +277,37 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> alloc.getTeacher() != null && alloc.getTimeslot() != null)
                 .groupBy(Allocation::getTeacher, ConstraintCollectors.toList())
-                .filter((teacher, allocs) -> hasOverlap(allocs))
-                .penalize(HardSoftScore.ONE_HARD, (teacher, allocs) -> calculateOverlapPenalty(allocs))
+                .filter((teacher, allocs) -> {
+                    // #region agent log
+                    long pinnedCount = allocs.stream().filter(Allocation::isPinned).count();
+                    long unpinnedCount = allocs.size() - pinnedCount;
+                    logDebug("D", "ScheduleConstraintProvider.teacherConflict:FILTER", "Checking teacher for conflicts", Map.of(
+                        "teacherId", teacher.getId(),
+                        "teacherName", teacher.getName(),
+                        "totalAllocations", allocs.size(),
+                        "pinnedCount", pinnedCount,
+                        "unpinnedCount", unpinnedCount
+                    ));
+                    // #endregion
+                    boolean hasOverlapResult = hasOverlap(allocs);
+                    // #region agent log
+                    logDebug("D", "ScheduleConstraintProvider.teacherConflict:FILTER_RESULT", "hasOverlap result for teacher", Map.of(
+                        "teacherId", teacher.getId(),
+                        "hasOverlap", hasOverlapResult
+                    ));
+                    // #endregion
+                    return hasOverlapResult;
+                })
+                .penalize(HardSoftScore.ONE_HARD, (teacher, allocs) -> {
+                    // #region agent log
+                    int penalty = calculateOverlapPenalty(allocs);
+                    logDebug("D", "ScheduleConstraintProvider.teacherConflict:PENALIZE", "Applying penalty for teacher", Map.of(
+                        "teacherId", teacher.getId(),
+                        "penalty", penalty
+                    ));
+                    // #endregion
+                    return penalty;
+                })
                 .asConstraint("Teacher conflict");
     }
 
@@ -292,8 +315,37 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> alloc.getClassroom() != null && alloc.getTimeslot() != null)
                 .groupBy(Allocation::getClassroom, ConstraintCollectors.toList())
-                .filter((classroom, allocs) -> hasOverlap(allocs))
-                .penalize(HardSoftScore.ONE_HARD, (classroom, allocs) -> calculateOverlapPenalty(allocs))
+                .filter((classroom, allocs) -> {
+                    // #region agent log
+                    long pinnedCount = allocs.stream().filter(Allocation::isPinned).count();
+                    long unpinnedCount = allocs.size() - pinnedCount;
+                    logDebug("D", "ScheduleConstraintProvider.classroomConflict:FILTER", "Checking classroom for conflicts", Map.of(
+                        "classroomId", classroom.getId(),
+                        "classroomName", classroom.getName(),
+                        "totalAllocations", allocs.size(),
+                        "pinnedCount", pinnedCount,
+                        "unpinnedCount", unpinnedCount
+                    ));
+                    // #endregion
+                    boolean hasOverlapResult = hasOverlap(allocs);
+                    // #region agent log
+                    logDebug("D", "ScheduleConstraintProvider.classroomConflict:FILTER_RESULT", "hasOverlap result for classroom", Map.of(
+                        "classroomId", classroom.getId(),
+                        "hasOverlap", hasOverlapResult
+                    ));
+                    // #endregion
+                    return hasOverlapResult;
+                })
+                .penalize(HardSoftScore.ONE_HARD, (classroom, allocs) -> {
+                    // #region agent log
+                    int penalty = calculateOverlapPenalty(allocs);
+                    logDebug("D", "ScheduleConstraintProvider.classroomConflict:PENALIZE", "Applying penalty for classroom", Map.of(
+                        "classroomId", classroom.getId(),
+                        "penalty", penalty
+                    ));
+                    // #endregion
+                    return penalty;
+                })
                 .asConstraint("Classroom conflict");
     }
 
