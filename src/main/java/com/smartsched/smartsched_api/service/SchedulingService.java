@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -399,8 +400,13 @@ public class SchedulingService {
     }
 
     /**
-     * Manual validation to check for overlaps in the solution
+     * Manual validation to check for overlaps and rule violations in the solution
      * This is a safety check in addition to constraint-based validation
+     * 
+     * Rules checked:
+     * 1. Teacher conflicts (same teacher at same time)
+     * 2. Classroom conflicts (same classroom at same time)
+     * 3. Same major subject + same teacher + different sections must be on different days
      */
     private boolean validateSolutionForOverlaps(ScheduleSolution solution) {
         if (solution.getAllocations() == null) return false;
@@ -430,6 +436,64 @@ public class SchedulingService {
             if (hasOverlapInList(allocs)) {
                 logger.error("!!! VALIDATION: Classroom {} has overlapping allocations!", entry.getKey());
                 return true;
+            }
+        }
+        
+        // Check rule: Same major subject + same teacher + different sections must be on different days
+        if (hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(solution.getAllocations())) {
+            logger.error("!!! VALIDATION: Same major subject with same teacher but different sections scheduled on same day!");
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Check if same major subject with same teacher but different sections are scheduled on the same day
+     * This violates the rule that different sections must be on different days
+     */
+    private boolean hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(List<Allocation> allocations) {
+        if (allocations == null || allocations.size() < 2) return false;
+        
+        // Group by teacher and subject code
+        Map<String, Map<String, List<Allocation>>> byTeacherAndSubject = 
+            allocations.stream()
+                .filter(a -> a.isMajor() && a.getTeacher() != null && a.getSubjectCode() != null && 
+                           a.getSection() != null && a.getTimeslot() != null)
+                .collect(Collectors.groupingBy(
+                    a -> a.getTeacher().getId(),
+                    Collectors.groupingBy(Allocation::getSubjectCode)
+                ));
+        
+        for (Map.Entry<String, Map<String, List<Allocation>>> teacherEntry : byTeacherAndSubject.entrySet()) {
+            for (Map.Entry<String, List<Allocation>> subjectEntry : teacherEntry.getValue().entrySet()) {
+                List<Allocation> allocs = subjectEntry.getValue();
+                if (allocs.size() < 2) continue;
+                
+                // Check if there are different sections
+                Set<String> sectionIds = allocs.stream()
+                    .map(a -> a.getSection().getId())
+                    .collect(Collectors.toSet());
+                
+                if (sectionIds.size() < 2) continue; // Only one section, skip
+                
+                // Group by day
+                Map<DayOfWeek, List<Allocation>> byDay = allocs.stream()
+                    .collect(Collectors.groupingBy(a -> a.getTimeslot().getDayOfWeek()));
+                
+                // Check if different sections are on the same day
+                for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : byDay.entrySet()) {
+                    List<Allocation> dayAllocs = dayEntry.getValue();
+                    Set<String> sectionsOnThisDay = dayAllocs.stream()
+                        .map(a -> a.getSection().getId())
+                        .collect(Collectors.toSet());
+                    
+                    if (sectionsOnThisDay.size() > 1) {
+                        logger.error("!!! VALIDATION: Subject {} for teacher {} has different sections ({}) scheduled on same day {}", 
+                                   subjectEntry.getKey(), teacherEntry.getKey(), sectionsOnThisDay, dayEntry.getKey());
+                        return true;
+                    }
+                }
             }
         }
         
