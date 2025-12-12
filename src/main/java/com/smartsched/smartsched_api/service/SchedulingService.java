@@ -125,6 +125,7 @@ public class SchedulingService {
         
         // --- CONVERT EXISTING SCHEDULES TO PINNED ALLOCATIONS (Fix for Bug A) ---
         logger.info("Converting {} existing schedules to PINNED allocations...", allExistingSchedules.size());
+        int pinnedCount = 0;
         for (Schedule existing : allExistingSchedules) {
             if (existing.getSectionId().equals(sectionId)) {
                 logger.info("Skipping existing schedule {} for section {} (it will be deleted)", existing.getId(), sectionId);
@@ -160,11 +161,18 @@ public class SchedulingService {
                 pinnedAllocation.setTimeslot(timeslot);
                 pinnedAllocation.setClassroom(classroom);
                 allocations.add(pinnedAllocation);
+                pinnedCount++;
+                logger.info("@@@ PINNED ALLOCATION CREATED: Subject={}, Section={}, Teacher={}, Classroom={}, Day={}, Time={}-{}, Timeslot={}", 
+                           existing.getSubjectCode(), section.getSectionName(), 
+                           teacher != null ? teacher.getName() : "null",
+                           classroom != null ? classroom.getName() : "null",
+                           existing.getDayOfWeek(), startTime, endTime, timeslotKey);
             } else {
                  logger.warn("Could not create pinned allocation for existing schedule ID {}. Missing data (Classroom: {}, Section: {}, Timeslot: {} (key: {}), Duration: {})", 
                     existing.getId(), classroom != null, section != null, timeslot != null, timeslotKey, duration);
             }
         }
+        logger.info("Created {} pinned allocations from existing schedules.", pinnedCount);
         // --- END PINNED ALLOCATION LOGIC ---
 
         logger.info("Created {} total allocations (new and pinned).", allocations.size());
@@ -191,6 +199,14 @@ public class SchedulingService {
          try {
             HardSoftScore finalScore = finalBestSolution.getScore();
             logger.info("!!! Solver finished for problemId: {}. FINAL SCORE received: {} !!!", problemId, finalScore);
+            logger.warn("@@@ FINAL SCORE ANALYSIS: Hard score={}, Soft score={}, Is feasible={}", 
+                       finalScore.hardScore(), finalScore.softScore(), finalScore.isFeasible());
+            if (!finalScore.isFeasible()) {
+                logger.error("!!! ERROR: Solution has HARD CONSTRAINT VIOLATIONS! Hard score: {} !!!", finalScore.hardScore());
+                logger.error("!!! REJECTING SOLUTION - Will not save schedules with constraint violations !!!");
+                solverStatusMap.put(problemId, SolverStatus.NOT_SOLVING);
+                return; // Don't save solutions with hard constraint violations
+            }
             solverStatusMap.put(problemId, SolverStatus.NOT_SOLVING);
 
             // --- THIS IS THE FIX: Declare solvedSectionId BEFORE using it ---
