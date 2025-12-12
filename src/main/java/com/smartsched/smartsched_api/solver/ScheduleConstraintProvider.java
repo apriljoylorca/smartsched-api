@@ -910,7 +910,27 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()))
                 .filter((alloc1, alloc2) -> {
-                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    // #region agent log
+                    logDebug("E", "ScheduleConstraintProvider.majorSubjectsSameTeacherSequential:JOIN", "Checking major subjects for same teacher", Map.of(
+                        "alloc1Id", alloc1.getId(),
+                        "alloc1Subject", alloc1.getSubjectCode(),
+                        "alloc1Section", alloc1.getSection() != null ? alloc1.getSection().getSectionName() : "null",
+                        "alloc1Pinned", alloc1.isPinned(),
+                        "alloc2Id", alloc2.getId(),
+                        "alloc2Subject", alloc2.getSubjectCode(),
+                        "alloc2Section", alloc2.getSection() != null ? alloc2.getSection().getSectionName() : "null",
+                        "alloc2Pinned", alloc2.isPinned(),
+                        "teacher", alloc1.getTeacher().getName(),
+                        "day", alloc1.getTimeslot().getDayOfWeek().toString()
+                    ));
+                    // #endregion
+                    
+                    if (alloc1.getId().equals(alloc2.getId())) {
+                        // #region agent log
+                        logDebug("E", "ScheduleConstraintProvider.majorSubjectsSameTeacherSequential:SAME_ALLOC", "Same allocation, skipping", Map.of());
+                        // #endregion
+                        return false;
+                    }
                     if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
                     
                     LocalTime start1 = alloc1.getTimeslot().getStartTime();
@@ -921,17 +941,44 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     // Check if they are sequential: end1 == start2 OR end2 == start1
                     boolean sequential = end1.equals(start2) || end2.equals(start1);
                     
-                    // Check for overlap: they overlap if (start1 < end2 && start2 < end1) OR they start at the same time
-                    boolean hasOverlap = (start1.isBefore(end2) && start2.isBefore(end1)) || start1.equals(start2);
+                    // Check for overlap: Two time ranges overlap if they share any time
+                    // Standard overlap check: (start1 < end2) AND (start2 < end1)
+                    // But isBefore() returns false for equals, so we need to handle equals separately
+                    // Also need to catch exact same start time
+                    boolean overlapCheck1 = start1.isBefore(end2);
+                    boolean overlapCheck2 = start2.isBefore(end1);
+                    boolean overlapCheck3 = start1.equals(start2); // Same start time = overlap
+                    boolean hasOverlap = (overlapCheck1 && overlapCheck2) || overlapCheck3;
                     
                     // Violation: has overlap AND not sequential
                     boolean violation = hasOverlap && !sequential;
+                    
+                    // #region agent log
+                    logDebug("E", "ScheduleConstraintProvider.majorSubjectsSameTeacherSequential:CHECK", "Checking overlap", Map.of(
+                        "start1", start1.toString(),
+                        "end1", end1.toString(),
+                        "start2", start2.toString(),
+                        "end2", end2.toString(),
+                        "sequential", sequential,
+                        "overlapCheck1", overlapCheck1,
+                        "overlapCheck2", overlapCheck2,
+                        "overlapCheck3", overlapCheck3,
+                        "hasOverlap", hasOverlap,
+                        "violation", violation
+                    ));
+                    // #endregion
                     
                     if (violation) {
                         logger.warn("!!! MAJOR TEACHER OVERLAP VIOLATION: {} and {} for teacher {} on {} - overlapping times {} vs {}", 
                                    alloc1.getSubjectCode(), alloc2.getSubjectCode(),
                                    alloc1.getTeacher().getName(), alloc1.getTimeslot().getDayOfWeek(),
                                    start1 + "-" + end1, start2 + "-" + end2);
+                        // #region agent log
+                        logDebug("E", "ScheduleConstraintProvider.majorSubjectsSameTeacherSequential:VIOLATION", "Violation detected", Map.of(
+                            "alloc1Subject", alloc1.getSubjectCode(),
+                            "alloc2Subject", alloc2.getSubjectCode()
+                        ));
+                        // #endregion
                     }
                     return violation;
                 })
