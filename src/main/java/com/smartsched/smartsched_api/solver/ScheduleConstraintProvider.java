@@ -45,7 +45,11 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 preferConsistentTimeForNonMajor(constraintFactory),
                 preferConsistentTimeForMajor(constraintFactory),
                 avoidLateEveningClasses(constraintFactory),
-                optimizeClassroomUtilization(constraintFactory)
+                optimizeClassroomUtilization(constraintFactory),
+                // --- NEW CONSTRAINTS FOR SCHEDULING RULES ---
+                maxTwoMajorSubjectsPerDayPerSection(constraintFactory),
+                majorSubjectsSameTeacherSectionSequential(constraintFactory),
+                nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory)
         };
     }
     
@@ -453,24 +457,31 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
 
     /**
      * Force major subjects to be sequential when on same day
+     * Updated to also check for same section to avoid false positives
      */
     private Constraint forceMajorSequential(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
-                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getSection() != null)
                 .join(Allocation.class,
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSubjectCode),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSection),
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()))
                 .filter((alloc1, alloc2) -> {
                     if (alloc1.getId().equals(alloc2.getId())) return false;
                     if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
                     
                     LocalTime endTime1 = alloc1.getTimeslot().getStartTime().plusMinutes(alloc1.getDurationInMinutes());
-                    boolean sequential = endTime1.equals(alloc2.getTimeslot().getStartTime());
+                    LocalTime endTime2 = alloc2.getTimeslot().getStartTime().plusMinutes(alloc2.getDurationInMinutes());
+                    LocalTime start1 = alloc1.getTimeslot().getStartTime();
+                    LocalTime start2 = alloc2.getTimeslot().getStartTime();
+                    
+                    // Sequential means: end1 == start2 OR end2 == start1
+                    boolean sequential = endTime1.equals(start2) || endTime2.equals(start1);
                     return !sequential; // Penalize if not sequential
                 })
                 .penalize(HardSoftScore.of(300, 0), (alloc1, alloc2) -> {
-                    logger.warn("@@@ MAJOR NON-SEQUENTIAL PENALTY: {} at {} vs {} on {}", 
-                               alloc1.getSubjectCode(), 
+                    logger.warn("@@@ MAJOR NON-SEQUENTIAL PENALTY: {} for section {} at {} vs {} on {}", 
+                               alloc1.getSubjectCode(), alloc1.getSection().getSectionName(),
                                alloc1.getTimeslot().getStartTime(),
                                alloc2.getTimeslot().getStartTime(), alloc1.getTimeslot().getDayOfWeek());
                     return 1;
@@ -558,5 +569,96 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     return 2; // Poor utilization
                 })
                 .asConstraint("Optimize classroom utilization");
+    }
+
+    /**
+     * Maximum 2 major subjects per day per section
+     * Rule: Allow only 2 major subjects to be held on the same day per section
+     */
+    private Constraint maxTwoMajorSubjectsPerDayPerSection(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getSection() != null)
+                .groupBy(
+                    alloc -> alloc.getSection(),
+                    alloc -> alloc.getTimeslot().getDayOfWeek(),
+                    ConstraintCollectors.count()
+                )
+                .filter((section, day, count) -> count > 2)
+                .penalize(HardSoftScore.ONE_HARD, (section, day, count) -> {
+                    logger.warn("!!! MAX MAJOR SUBJECTS VIOLATION: Section {} has {} major subjects on {}", 
+                               section.getSectionName(), count, day);
+                    return (int)(count - 2); // Penalty increases with each subject over 2
+                })
+                .asConstraint("Maximum 2 major subjects per day per section");
+    }
+
+    /**
+     * Major subjects from same teacher and section must be sequential
+     * Rule: Major subjects from the same teacher and section must be held at sequential time
+     */
+    private Constraint majorSubjectsSameTeacherSectionSequential(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
+                               alloc.getTeacher() != null && alloc.getSection() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSection),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSubjectCode),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()))
+                .filter((alloc1, alloc2) -> {
+                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
+                    
+                    // Check if they are sequential: end time of one equals start time of the other
+                    LocalTime endTime1 = alloc1.getTimeslot().getStartTime().plusMinutes(alloc1.getDurationInMinutes());
+                    LocalTime endTime2 = alloc2.getTimeslot().getStartTime().plusMinutes(alloc2.getDurationInMinutes());
+                    LocalTime start1 = alloc1.getTimeslot().getStartTime();
+                    LocalTime start2 = alloc2.getTimeslot().getStartTime();
+                    
+                    // Sequential means: end1 == start2 OR end2 == start1
+                    boolean sequential = endTime1.equals(start2) || endTime2.equals(start1);
+                    return !sequential; // Penalize if not sequential
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! MAJOR NON-SEQUENTIAL VIOLATION: {} and {} for teacher {} section {} on {} - not sequential", 
+                               alloc1.getSubjectCode(), alloc2.getSubjectCode(),
+                               alloc1.getTeacher().getName(), alloc1.getSection().getSectionName(),
+                               alloc1.getTimeslot().getDayOfWeek());
+                    return 1;
+                })
+                .asConstraint("Major subjects same teacher section sequential");
+    }
+
+    /**
+     * Non-major subjects from same teacher and section must be same time different days
+     * Rule: Non major subjects from same teacher and section must be held on the same timeslot but different days
+     */
+    private Constraint nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && !alloc.isMajor() && alloc.getTimeslot() != null && 
+                               alloc.getTeacher() != null && alloc.getSection() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSection),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSubjectCode))
+                .filter((alloc1, alloc2) -> {
+                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
+                    
+                    // Check if same time and same day (violation) OR different time (violation)
+                    boolean sameTime = alloc1.getTimeslot().getStartTime().equals(alloc2.getTimeslot().getStartTime());
+                    boolean sameDay = alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
+                    
+                    // Penalize if: not same time OR same day (should be same time AND different days)
+                    return !sameTime || sameDay;
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! NON-MAJOR RULE VIOLATION: {} for teacher {} section {} - should be same time different days, but got {} on {} vs {} on {}", 
+                               alloc1.getSubjectCode(), alloc1.getTeacher().getName(), alloc1.getSection().getSectionName(),
+                               alloc1.getTimeslot().getStartTime(), alloc1.getTimeslot().getDayOfWeek(),
+                               alloc2.getTimeslot().getStartTime(), alloc2.getTimeslot().getDayOfWeek());
+                    return 1;
+                })
+                .asConstraint("Non-major subjects same teacher section same time different days");
     }
 }
