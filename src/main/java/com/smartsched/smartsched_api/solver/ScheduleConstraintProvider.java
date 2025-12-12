@@ -92,7 +92,10 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 // --- NEW CONSTRAINTS FOR SCHEDULING RULES ---
                 maxTwoMajorSubjectsPerDayPerSection(constraintFactory),
                 majorSubjectsSameTeacherSectionSequential(constraintFactory),
-                nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory)
+                nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory),
+                // --- NEW CONSTRAINTS FOR TEACHER MAJOR SUBJECTS ---
+                majorSubjectsSameTeacherSequential(constraintFactory),
+                maxThreeMajorSubjectsPerDayPerTeacher(constraintFactory)
         };
     }
     
@@ -892,5 +895,73 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     return 1;
                 })
                 .asConstraint("Non-major subjects same teacher section same time different days");
+    }
+
+    /**
+     * Major subjects from same teacher (across all sections) must be sequential
+     * Rule: Same teacher's major subjects must be at different sequential timeslots (not overlapping)
+     */
+    private Constraint majorSubjectsSameTeacherSequential(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
+                               alloc.getTeacher() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()))
+                .filter((alloc1, alloc2) -> {
+                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
+                    
+                    LocalTime start1 = alloc1.getTimeslot().getStartTime();
+                    LocalTime start2 = alloc2.getTimeslot().getStartTime();
+                    LocalTime end1 = start1.plusMinutes(alloc1.getDurationInMinutes());
+                    LocalTime end2 = start2.plusMinutes(alloc2.getDurationInMinutes());
+                    
+                    // Check if they are sequential: end1 == start2 OR end2 == start1
+                    boolean sequential = end1.equals(start2) || end2.equals(start1);
+                    
+                    // Check for overlap: they overlap if (start1 < end2 && start2 < end1) OR they start at the same time
+                    boolean hasOverlap = (start1.isBefore(end2) && start2.isBefore(end1)) || start1.equals(start2);
+                    
+                    // Violation: has overlap AND not sequential
+                    boolean violation = hasOverlap && !sequential;
+                    
+                    if (violation) {
+                        logger.warn("!!! MAJOR TEACHER OVERLAP VIOLATION: {} and {} for teacher {} on {} - overlapping times {} vs {}", 
+                                   alloc1.getSubjectCode(), alloc2.getSubjectCode(),
+                                   alloc1.getTeacher().getName(), alloc1.getTimeslot().getDayOfWeek(),
+                                   start1 + "-" + end1, start2 + "-" + end2);
+                    }
+                    return violation;
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! PENALIZING MAJOR TEACHER OVERLAP: {} and {} for teacher {} on {}", 
+                               alloc1.getSubjectCode(), alloc2.getSubjectCode(),
+                               alloc1.getTeacher().getName(), alloc1.getTimeslot().getDayOfWeek());
+                    return 1;
+                })
+                .asConstraint("Major subjects same teacher sequential");
+    }
+
+    /**
+     * Maximum 3 major subjects per day per teacher
+     * Rule: Teachers should only have 3 major subjects scheduled per day
+     */
+    private Constraint maxThreeMajorSubjectsPerDayPerTeacher(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
+                               alloc.getTeacher() != null)
+                .groupBy(
+                    alloc -> alloc.getTeacher(),
+                    alloc -> alloc.getTimeslot().getDayOfWeek(),
+                    ConstraintCollectors.count()
+                )
+                .filter((teacher, day, count) -> count > 3)
+                .penalize(HardSoftScore.ONE_HARD, (teacher, day, count) -> {
+                    logger.warn("!!! MAX MAJOR SUBJECTS PER TEACHER VIOLATION: Teacher {} has {} major subjects on {}", 
+                               teacher.getName(), count, day);
+                    return (int)(count - 3); // Penalty increases with each subject over 3
+                })
+                .asConstraint("Maximum 3 major subjects per day per teacher");
     }
 }
