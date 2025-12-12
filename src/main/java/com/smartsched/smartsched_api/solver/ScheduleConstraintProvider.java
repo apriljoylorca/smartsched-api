@@ -4,6 +4,8 @@ import java.time.DayOfWeek;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
+import java.io.FileWriter;
+import java.io.IOException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +24,47 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     private static final Logger logger = LoggerFactory.getLogger(ScheduleConstraintProvider.class);
     private static final LocalTime MAX_END_TIME = LocalTime.of(20, 30);
     private static final LocalTime MIN_TIME = LocalTime.MIN;
+    private static final String DEBUG_LOG_PATH = "c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log";
+    
+    // #region agent log
+    private void logDebug(String hypothesisId, String location, String message, Map<String, Object> data) {
+        try {
+            StringBuilder json = new StringBuilder();
+            json.append("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"").append(hypothesisId).append("\"");
+            json.append(",\"location\":\"").append(location.replace("\"", "\\\"")).append("\"");
+            json.append(",\"message\":\"").append(message.replace("\"", "\\\"")).append("\"");
+            json.append(",\"timestamp\":").append(System.currentTimeMillis());
+            if (data != null && !data.isEmpty()) {
+                json.append(",\"data\":{");
+                boolean first = true;
+                for (Map.Entry<String, Object> entry : data.entrySet()) {
+                    if (!first) json.append(",");
+                    json.append("\"").append(entry.getKey()).append("\":");
+                    Object value = entry.getValue();
+                    if (value == null) {
+                        json.append("null");
+                    } else if (value instanceof String) {
+                        json.append("\"").append(value.toString().replace("\"", "\\\"")).append("\"");
+                    } else if (value instanceof Boolean || value instanceof Number) {
+                        json.append(value);
+                    } else {
+                        json.append("\"").append(value.toString().replace("\"", "\\\"")).append("\"");
+                    }
+                    first = false;
+                }
+                json.append("}");
+            } else {
+                json.append(",\"data\":{}");
+            }
+            json.append("}\n");
+            try (FileWriter fw = new FileWriter(DEBUG_LOG_PATH, true)) {
+                fw.write(json.toString());
+            }
+        } catch (IOException e) {
+            // Ignore logging errors
+        }
+    }
+    // #endregion
 
     @Override
     public Constraint[] defineConstraints(ConstraintFactory constraintFactory) {
@@ -65,6 +108,10 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     }
 
     private boolean hasOverlap(List<Allocation> allocations) {
+        // #region agent log
+        logDebug("A", "ScheduleConstraintProvider.hasOverlap:ENTRY", "Checking overlaps", Map.of("allocationCount", allocations.size()));
+        // #endregion
+        
         if (allocations.size() <= 1) return false;
         
         // Filter out allocations without timeslots
@@ -96,18 +143,55 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     LocalTime currentEnd = currentStart.plusMinutes(current.getDurationInMinutes());
                     LocalTime nextStart = next.getTimeslot().getStartTime();
                     
+                    // #region agent log
+                    boolean isExactOverlap = nextStart.equals(currentStart);
+                    boolean isBeforeOverlap = nextStart.isBefore(currentEnd);
+                    logDebug("A", "ScheduleConstraintProvider.hasOverlap:CHECK", "Comparing allocations", Map.of(
+                        "day", dayEntry.getKey().toString(),
+                        "currentSubject", current.getSubjectCode(),
+                        "currentStart", currentStart.toString(),
+                        "currentEnd", currentEnd.toString(),
+                        "nextSubject", next.getSubjectCode(),
+                        "nextStart", nextStart.toString(),
+                        "isExactOverlap", isExactOverlap,
+                        "isBeforeOverlap", isBeforeOverlap,
+                        "currentSection", current.getSection() != null ? current.getSection().getId() : "null",
+                        "nextSection", next.getSection() != null ? next.getSection().getId() : "null"
+                    ));
+                    // #endregion
+                    
                     // Check if there's an overlap: next starts before current ends (on the same day)
                     if (nextStart.isBefore(currentEnd)) {
                         logger.warn("!!! OVERLAP DETECTED: {} ({} {} - {}) overlaps with {} ({} {} - {})", 
                                    current.getSubjectCode(), current.getTimeslot().getDayOfWeek(), currentStart, currentEnd,
                                    next.getSubjectCode(), next.getTimeslot().getDayOfWeek(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
+                        // #region agent log
+                        logDebug("A", "ScheduleConstraintProvider.hasOverlap:OVERLAP_FOUND", "Overlap detected via isBefore", Map.of(
+                            "currentSubject", current.getSubjectCode(),
+                            "nextSubject", next.getSubjectCode(),
+                            "day", dayEntry.getKey().toString()
+                        ));
+                        // #endregion
                         return true;
                     }
+                    // #region agent log
+                    if (isExactOverlap) {
+                        logDebug("A", "ScheduleConstraintProvider.hasOverlap:EXACT_OVERLAP_MISSED", "Exact overlap missed by isBefore check", Map.of(
+                            "currentSubject", current.getSubjectCode(),
+                            "nextSubject", next.getSubjectCode(),
+                            "day", dayEntry.getKey().toString(),
+                            "startTime", currentStart.toString()
+                        ));
+                    }
+                    // #endregion
                 } catch (Exception e) {
                     logger.error("Error calculating overlap for allocations: {}", e.getMessage());
                 }
             }
         }
+        // #region agent log
+        logDebug("A", "ScheduleConstraintProvider.hasOverlap:EXIT", "No overlaps found", Map.of());
+        // #endregion
         return false; // No overlaps found
     }
 
@@ -147,13 +231,40 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                         Allocation next = dayAllocations.get(j);
                         LocalTime nextStart = next.getTimeslot().getStartTime();
                         
+                        // #region agent log
+                        boolean isExactOverlap = nextStart.equals(currentStart);
+                        boolean isBeforeOverlap = nextStart.isBefore(currentEnd);
+                        logDebug("C", "ScheduleConstraintProvider.calculateOverlapPenalty:CHECK", "Checking penalty calculation", Map.of(
+                            "currentSubject", current.getSubjectCode(),
+                            "nextSubject", next.getSubjectCode(),
+                            "currentStart", currentStart.toString(),
+                            "currentEnd", currentEnd.toString(),
+                            "nextStart", nextStart.toString(),
+                            "isExactOverlap", isExactOverlap,
+                            "isBeforeOverlap", isBeforeOverlap
+                        ));
+                        // #endregion
+                        
                         // If next starts before current ends (on the same day), there's an overlap
                         if (nextStart.isBefore(currentEnd)) {
                             overlapCount++;
                             logger.warn("!!! PENALIZING Overlap: {} ({} {} - {}) overlaps with {} ({} {} - {})", 
                                        current.getSubjectCode(), current.getTimeslot().getDayOfWeek(), currentStart, currentEnd,
                                        next.getSubjectCode(), next.getTimeslot().getDayOfWeek(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
+                            // #region agent log
+                            logDebug("C", "ScheduleConstraintProvider.calculateOverlapPenalty:OVERLAP_COUNTED", "Overlap counted", Map.of(
+                                "overlapCount", overlapCount
+                            ));
+                            // #endregion
                         } else {
+                            // #region agent log
+                            if (isExactOverlap) {
+                                logDebug("C", "ScheduleConstraintProvider.calculateOverlapPenalty:EXACT_OVERLAP_MISSED", "Exact overlap missed in penalty calculation", Map.of(
+                                    "currentSubject", current.getSubjectCode(),
+                                    "nextSubject", next.getSubjectCode()
+                                ));
+                            }
+                            // #endregion
                             // Since allocations are sorted by start time, we can break here
                             break;
                         }
@@ -190,8 +301,33 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> alloc.getSection() != null && alloc.getTimeslot() != null)
                 .groupBy(Allocation::getSection, ConstraintCollectors.toList())
-                .filter((section, allocs) -> hasOverlap(allocs))
-                .penalize(HardSoftScore.ONE_HARD, (section, allocs) -> calculateOverlapPenalty(allocs))
+                .filter((section, allocs) -> {
+                    // #region agent log
+                    logDebug("A", "ScheduleConstraintProvider.sectionConflict:FILTER", "Checking section for conflicts", Map.of(
+                        "sectionId", section.getId(),
+                        "sectionName", section.getSectionName(),
+                        "allocationCount", allocs.size()
+                    ));
+                    // #endregion
+                    boolean hasOverlapResult = hasOverlap(allocs);
+                    // #region agent log
+                    logDebug("A", "ScheduleConstraintProvider.sectionConflict:FILTER_RESULT", "hasOverlap result", Map.of(
+                        "sectionId", section.getId(),
+                        "hasOverlap", hasOverlapResult
+                    ));
+                    // #endregion
+                    return hasOverlapResult;
+                })
+                .penalize(HardSoftScore.ONE_HARD, (section, allocs) -> {
+                    // #region agent log
+                    int penalty = calculateOverlapPenalty(allocs);
+                    logDebug("A", "ScheduleConstraintProvider.sectionConflict:PENALIZE", "Applying penalty", Map.of(
+                        "sectionId", section.getId(),
+                        "penalty", penalty
+                    ));
+                    // #endregion
+                    return penalty;
+                })
                 .asConstraint("Section conflict");
     }
 
@@ -206,8 +342,24 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()),
                         ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getStartTime()))
                 .filter((alloc1, alloc2) -> {
+                    // #region agent log
+                    logDebug("B", "ScheduleConstraintProvider.exactTimeConflict:JOIN", "Checking exact time conflict", Map.of(
+                        "alloc1Id", alloc1.getId(),
+                        "alloc1Subject", alloc1.getSubjectCode(),
+                        "alloc2Id", alloc2.getId(),
+                        "alloc2Subject", alloc2.getSubjectCode(),
+                        "day", alloc1.getTimeslot().getDayOfWeek().toString(),
+                        "time", alloc1.getTimeslot().getStartTime().toString()
+                    ));
+                    // #endregion
+                    
                     // Only penalize if they are different allocations
-                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getId().equals(alloc2.getId())) {
+                        // #region agent log
+                        logDebug("B", "ScheduleConstraintProvider.exactTimeConflict:SAME_ALLOC", "Same allocation, skipping", Map.of());
+                        // #endregion
+                        return false;
+                    }
                     
                     // Check if they have the same teacher, classroom, or section
                     boolean sameTeacher = alloc1.getTeacher() != null && alloc2.getTeacher() != null && 
@@ -217,15 +369,43 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     boolean sameSection = alloc1.getSection() != null && alloc2.getSection() != null && 
                                         alloc1.getSection().getId().equals(alloc2.getSection().getId());
                     
+                    // #region agent log
+                    logDebug("B", "ScheduleConstraintProvider.exactTimeConflict:CHECK", "Checking conflict conditions", Map.of(
+                        "sameTeacher", sameTeacher,
+                        "sameClassroom", sameClassroom,
+                        "sameSection", sameSection,
+                        "alloc1SectionId", alloc1.getSection() != null ? alloc1.getSection().getId() : "null",
+                        "alloc2SectionId", alloc2.getSection() != null ? alloc2.getSection().getId() : "null"
+                    ));
+                    // #endregion
+                    
                     if (sameTeacher || sameClassroom || sameSection) {
                         logger.warn("!!! EXACT TIME CONFLICT: {} and {} at same time {} on {}", 
                                    alloc1.getSubjectCode(), alloc2.getSubjectCode(), 
                                    alloc1.getTimeslot().getStartTime(), alloc1.getTimeslot().getDayOfWeek());
+                        // #region agent log
+                        logDebug("B", "ScheduleConstraintProvider.exactTimeConflict:CONFLICT_FOUND", "Exact time conflict detected", Map.of(
+                            "alloc1Subject", alloc1.getSubjectCode(),
+                            "alloc2Subject", alloc2.getSubjectCode(),
+                            "conflictType", sameSection ? "sameSection" : (sameTeacher ? "sameTeacher" : "sameClassroom")
+                        ));
+                        // #endregion
                         return true;
                     }
+                    // #region agent log
+                    logDebug("B", "ScheduleConstraintProvider.exactTimeConflict:NO_CONFLICT", "No conflict conditions met", Map.of());
+                    // #endregion
                     return false;
                 })
-                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> 1)
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    // #region agent log
+                    logDebug("B", "ScheduleConstraintProvider.exactTimeConflict:PENALIZE", "Applying penalty", Map.of(
+                        "alloc1Subject", alloc1.getSubjectCode(),
+                        "alloc2Subject", alloc2.getSubjectCode()
+                    ));
+                    // #endregion
+                    return 1;
+                })
                 .asConstraint("Exact time conflict");
     }
 
