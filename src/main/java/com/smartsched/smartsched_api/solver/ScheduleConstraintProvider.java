@@ -1108,20 +1108,17 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     // Check if they are on the same day - this is a violation
                     boolean sameDay = alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
                     
-                    // Check if they have different start times - this is also a violation (should be same time on different days)
-                    boolean differentTime = !alloc1.getTimeslot().getStartTime().equals(alloc2.getTimeslot().getStartTime());
-                    
-                    // Violation: same day OR different time (should be different day AND same time)
-                    boolean violation = sameDay || differentTime;
+                    // Only penalize if same day (different sections on same day is the main violation)
+                    // We'll handle different times separately if needed, but for now focus on same day violation
+                    boolean violation = sameDay;
                     
                     // #region agent log
+                    Map<String, Object> checkLogData = new HashMap<>();
+                    checkLogData.put("differentSections", differentSections);
+                    checkLogData.put("sameDay", sameDay);
+                    checkLogData.put("violation", violation);
                     logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:CHECK", 
-                            "Checking violations", Map.of(
-                        "differentSections", differentSections,
-                        "sameDay", sameDay,
-                        "differentTime", differentTime,
-                        "violation", violation
-                    ));
+                            "Checking violations", checkLogData);
                     // #endregion
                     
                     if (sameDay) {
@@ -1139,37 +1136,24 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                         // #endregion
                     }
                     
-                    if (differentTime && !sameDay) {
-                        logger.warn("!!! SAME MAJOR SUBJECT SAME TEACHER DIFFERENT SECTIONS DIFFERENT TIME VIOLATION: {} for teacher {} - {} at {} vs {} at {}", 
-                                   alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
-                                   alloc1.getSection().getSectionName(), alloc1.getTimeslot().getStartTime(),
-                                   alloc2.getSection().getSectionName(), alloc2.getTimeslot().getStartTime());
-                        // #region agent log
-                        logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:VIOLATION_DIFFERENT_TIME", 
-                                "Different time violation detected", Map.of(
-                            "alloc1Section", alloc1.getSection().getSectionName(),
-                            "alloc1Time", alloc1.getTimeslot().getStartTime().toString(),
-                            "alloc2Section", alloc2.getSection().getSectionName(),
-                            "alloc2Time", alloc2.getTimeslot().getStartTime().toString()
-                        ));
-                        // #endregion
-                    }
-                    
                     return violation;
                 })
                 .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
-                    boolean sameDay = alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
-                    boolean differentTime = !alloc1.getTimeslot().getStartTime().equals(alloc2.getTimeslot().getStartTime());
-                    
-                    if (sameDay) {
-                        logger.warn("!!! PENALIZING SAME MAJOR SUBJECT SAME TEACHER DIFFERENT SECTIONS SAME DAY: {} for teacher {} - {} and {}", 
-                                   alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
-                                   alloc1.getSection().getSectionName(), alloc2.getSection().getSectionName());
-                    } else if (differentTime) {
-                        logger.warn("!!! PENALIZING SAME MAJOR SUBJECT SAME TEACHER DIFFERENT SECTIONS DIFFERENT TIME: {} for teacher {} - {} and {}", 
-                                   alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
-                                   alloc1.getSection().getSectionName(), alloc2.getSection().getSectionName());
-                    }
+                    logger.warn("!!! PENALIZING SAME MAJOR SUBJECT SAME TEACHER DIFFERENT SECTIONS SAME DAY: {} for teacher {} - {} and {}", 
+                               alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
+                               alloc1.getSection().getSectionName(), alloc2.getSection().getSectionName());
+                    // #region agent log
+                    Map<String, Object> penaltyData = new HashMap<>();
+                    penaltyData.put("alloc1Id", alloc1.getId());
+                    penaltyData.put("alloc1Section", alloc1.getSection() != null ? alloc1.getSection().getSectionName() : "null");
+                    penaltyData.put("alloc1Day", alloc1.getTimeslot() != null ? alloc1.getTimeslot().getDayOfWeek().toString() : "null");
+                    penaltyData.put("alloc2Id", alloc2.getId());
+                    penaltyData.put("alloc2Section", alloc2.getSection() != null ? alloc2.getSection().getSectionName() : "null");
+                    penaltyData.put("alloc2Day", alloc2.getTimeslot() != null ? alloc2.getTimeslot().getDayOfWeek().toString() : "null");
+                    penaltyData.put("penalty", 1);
+                    logDebug("A", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:PENALTY", 
+                            "Applying penalty", penaltyData);
+                    // #endregion
                     return 1;
                 })
                 .asConstraint("Same major subject same teacher different sections different days same time");

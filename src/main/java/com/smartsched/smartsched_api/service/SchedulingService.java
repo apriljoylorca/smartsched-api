@@ -192,6 +192,13 @@ public class SchedulingService {
                 finalBestSolution -> saveSolution(problemId, finalBestSolution),
                 (String failedProblemId, Throwable throwable) -> {
                      logger.error("!!! SOLVING FAILED for problemId: {} !!!", failedProblemId, throwable);
+                     // #region agent log
+                     try {
+                         java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
+                         fw.write("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"B\",\"location\":\"SchedulingService.solveAndSave:FAILURE\",\"message\":\"Solver failed before saveSolution\",\"data\":{\"problemId\":\"" + failedProblemId + "\",\"error\":\"" + throwable.getClass().getSimpleName() + "\"},\"timestamp\":" + System.currentTimeMillis() + "}\n");
+                         fw.close();
+                     } catch (Exception e) {}
+                     // #endregion
                      solverStatusMap.put(failedProblemId, SolverStatus.NOT_SOLVING);
                      try {
                          logger.warn("Attempting cleanup for failed problemId: {}", failedProblemId);
@@ -205,6 +212,13 @@ public class SchedulingService {
     @Transactional
     protected void saveSolution(String problemId, ScheduleSolution finalBestSolution) {
          try {
+            // #region agent log
+            try {
+                java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
+                fw.write("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"C\",\"location\":\"SchedulingService.saveSolution:ENTRY\",\"message\":\"saveSolution called\",\"data\":{\"problemId\":\"" + problemId + "\"},\"timestamp\":" + System.currentTimeMillis() + "}\n");
+                fw.close();
+            } catch (Exception e) {}
+            // #endregion
             HardSoftScore finalScore = finalBestSolution.getScore();
             logger.info("!!! Solver finished for problemId: {}. FINAL SCORE received: {} !!!", problemId, finalScore);
             logger.warn("@@@ FINAL SCORE ANALYSIS: Hard score={}, Soft score={}, Is feasible={}", 
@@ -214,6 +228,13 @@ public class SchedulingService {
             logger.info("@@@ saveSolution: Starting validation...");
             boolean hasOverlaps = validateSolutionForOverlaps(finalBestSolution);
             logger.info("@@@ saveSolution: Validation result: hasOverlaps={}", hasOverlaps);
+            // #region agent log
+            try {
+                java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
+                fw.write("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"C\",\"location\":\"SchedulingService.saveSolution:VALIDATION\",\"message\":\"Validation completed\",\"data\":{\"hasOverlaps\":" + hasOverlaps + "},\"timestamp\":" + System.currentTimeMillis() + "}\n");
+                fw.close();
+            } catch (Exception e) {}
+            // #endregion
             if (hasOverlaps) {
                 logger.error("!!! ERROR: Manual validation detected OVERLAPS in solution! !!!");
                 logger.error("!!! REJECTING SOLUTION - Will not save schedules with overlaps !!!");
@@ -474,9 +495,23 @@ public class SchedulingService {
      */
     private boolean fixSameMajorSubjectSameTeacherDifferentSectionsViolations(ScheduleSolution solution) {
         logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: ENTRY");
+        // #region agent log
+        try {
+            java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
+            fw.write("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"D\",\"location\":\"SchedulingService.fixSameMajorSubjectSameTeacherDifferentSectionsViolations:ENTRY\",\"message\":\"Reassignment method called\",\"data\":{},\"timestamp\":" + System.currentTimeMillis() + "}\n");
+            fw.close();
+        } catch (Exception e) {}
+        // #endregion
         
         if (solution.getAllocations() == null) {
             logger.error("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: No allocations!");
+            // #region agent log
+            try {
+                java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
+                fw.write("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"D\",\"location\":\"SchedulingService.fixSameMajorSubjectSameTeacherDifferentSectionsViolations:NO_ALLOCATIONS\",\"message\":\"No allocations found\",\"data\":{},\"timestamp\":" + System.currentTimeMillis() + "}\n");
+                fw.close();
+            } catch (Exception e) {}
+            // #endregion
             return false;
         }
         
