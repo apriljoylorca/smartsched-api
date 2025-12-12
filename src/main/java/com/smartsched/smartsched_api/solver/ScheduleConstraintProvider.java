@@ -1,7 +1,9 @@
 package com.smartsched.smartsched_api.solver;
 
+import java.time.DayOfWeek;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,33 +65,43 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         
         // Filter out allocations without timeslots
         List<Allocation> validAllocations = allocations.stream()
-            .filter(alloc -> alloc.getTimeslot() != null && alloc.getTimeslot().getStartTime() != null)
+            .filter(alloc -> alloc.getTimeslot() != null && alloc.getTimeslot().getStartTime() != null && alloc.getTimeslot().getDayOfWeek() != null)
             .collect(java.util.stream.Collectors.toList());
             
         if (validAllocations.size() <= 1) return false;
         
-        // Sort by start time
-        validAllocations.sort((a, b) -> a.getTimeslot().getStartTime().compareTo(b.getTimeslot().getStartTime()));
+        // Group by day of week first, then check overlaps within each day
+        Map<DayOfWeek, List<Allocation>> allocationsByDay = validAllocations.stream()
+            .collect(java.util.stream.Collectors.groupingBy(alloc -> alloc.getTimeslot().getDayOfWeek()));
         
-        // Check for overlaps
-        for (int i = 0; i < validAllocations.size() - 1; i++) {
-            Allocation current = validAllocations.get(i);
-            Allocation next = validAllocations.get(i + 1);
+        // Check overlaps for each day separately
+        for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : allocationsByDay.entrySet()) {
+            List<Allocation> dayAllocations = dayEntry.getValue();
+            if (dayAllocations.size() <= 1) continue;
             
-            try {
-                LocalTime currentStart = current.getTimeslot().getStartTime();
-                LocalTime currentEnd = currentStart.plusMinutes(current.getDurationInMinutes());
-                LocalTime nextStart = next.getTimeslot().getStartTime();
+            // Sort by start time for this day
+            dayAllocations.sort((a, b) -> a.getTimeslot().getStartTime().compareTo(b.getTimeslot().getStartTime()));
+            
+            // Check for overlaps within this day
+            for (int i = 0; i < dayAllocations.size() - 1; i++) {
+                Allocation current = dayAllocations.get(i);
+                Allocation next = dayAllocations.get(i + 1);
                 
-                // Check if there's an overlap: next starts before current ends
-                if (nextStart.isBefore(currentEnd)) {
-                    logger.warn("!!! OVERLAP DETECTED: {} ({} - {}) overlaps with {} ({} - {})", 
-                               current.getSubjectCode(), currentStart, currentEnd,
-                               next.getSubjectCode(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
-                    return true;
+                try {
+                    LocalTime currentStart = current.getTimeslot().getStartTime();
+                    LocalTime currentEnd = currentStart.plusMinutes(current.getDurationInMinutes());
+                    LocalTime nextStart = next.getTimeslot().getStartTime();
+                    
+                    // Check if there's an overlap: next starts before current ends (on the same day)
+                    if (nextStart.isBefore(currentEnd)) {
+                        logger.warn("!!! OVERLAP DETECTED: {} ({} {} - {}) overlaps with {} ({} {} - {})", 
+                                   current.getSubjectCode(), current.getTimeslot().getDayOfWeek(), currentStart, currentEnd,
+                                   next.getSubjectCode(), next.getTimeslot().getDayOfWeek(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
+                        return true;
+                    }
+                } catch (Exception e) {
+                    logger.error("Error calculating overlap for allocations: {}", e.getMessage());
                 }
-            } catch (Exception e) {
-                logger.error("Error calculating overlap for allocations: {}", e.getMessage());
             }
         }
         return false; // No overlaps found
@@ -100,41 +112,51 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
         
         // Filter out allocations without timeslots
         List<Allocation> validAllocations = allocations.stream()
-            .filter(alloc -> alloc.getTimeslot() != null && alloc.getTimeslot().getStartTime() != null)
+            .filter(alloc -> alloc.getTimeslot() != null && alloc.getTimeslot().getStartTime() != null && alloc.getTimeslot().getDayOfWeek() != null)
             .collect(java.util.stream.Collectors.toList());
             
         if (validAllocations.size() <= 1) return 0;
         
         int overlapCount = 0;
         
-        // Sort by start time
-        validAllocations.sort((a, b) -> a.getTimeslot().getStartTime().compareTo(b.getTimeslot().getStartTime()));
+        // Group by day of week first, then check overlaps within each day
+        Map<DayOfWeek, List<Allocation>> allocationsByDay = validAllocations.stream()
+            .collect(java.util.stream.Collectors.groupingBy(alloc -> alloc.getTimeslot().getDayOfWeek()));
         
-        // Check each allocation against all subsequent ones
-        for (int i = 0; i < validAllocations.size(); i++) {
-            Allocation current = validAllocations.get(i);
+        // Check overlaps for each day separately
+        for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : allocationsByDay.entrySet()) {
+            List<Allocation> dayAllocations = dayEntry.getValue();
+            if (dayAllocations.size() <= 1) continue;
             
-            try {
-                LocalTime currentStart = current.getTimeslot().getStartTime();
-                LocalTime currentEnd = currentStart.plusMinutes(current.getDurationInMinutes());
+            // Sort by start time for this day
+            dayAllocations.sort((a, b) -> a.getTimeslot().getStartTime().compareTo(b.getTimeslot().getStartTime()));
+            
+            // Check each allocation against all subsequent ones on the same day
+            for (int i = 0; i < dayAllocations.size(); i++) {
+                Allocation current = dayAllocations.get(i);
                 
-                for (int j = i + 1; j < validAllocations.size(); j++) {
-                    Allocation next = validAllocations.get(j);
-                    LocalTime nextStart = next.getTimeslot().getStartTime();
+                try {
+                    LocalTime currentStart = current.getTimeslot().getStartTime();
+                    LocalTime currentEnd = currentStart.plusMinutes(current.getDurationInMinutes());
                     
-                    // If next starts before current ends, there's an overlap
-                    if (nextStart.isBefore(currentEnd)) {
-                        overlapCount++;
-                        logger.warn("!!! PENALIZING Overlap: {} ({} - {}) overlaps with {} ({} - {})", 
-                                   current.getSubjectCode(), currentStart, currentEnd,
-                                   next.getSubjectCode(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
-                    } else {
-                        // Since allocations are sorted by start time, we can break here
-                        break;
+                    for (int j = i + 1; j < dayAllocations.size(); j++) {
+                        Allocation next = dayAllocations.get(j);
+                        LocalTime nextStart = next.getTimeslot().getStartTime();
+                        
+                        // If next starts before current ends (on the same day), there's an overlap
+                        if (nextStart.isBefore(currentEnd)) {
+                            overlapCount++;
+                            logger.warn("!!! PENALIZING Overlap: {} ({} {} - {}) overlaps with {} ({} {} - {})", 
+                                       current.getSubjectCode(), current.getTimeslot().getDayOfWeek(), currentStart, currentEnd,
+                                       next.getSubjectCode(), next.getTimeslot().getDayOfWeek(), nextStart, nextStart.plusMinutes(next.getDurationInMinutes()));
+                        } else {
+                            // Since allocations are sorted by start time, we can break here
+                            break;
+                        }
                     }
+                } catch (Exception e) {
+                    logger.error("Error calculating overlap penalty for allocation {}: {}", current.getId(), e.getMessage());
                 }
-            } catch (Exception e) {
-                logger.error("Error calculating overlap penalty for allocation {}: {}", current.getId(), e.getMessage());
             }
         }
         return overlapCount;
