@@ -440,17 +440,187 @@ public class SchedulingService {
         }
         
         // Check rule: Same major subject + same teacher + different sections must be on different days
+        // If violation found, attempt automatic reassignment
         if (hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(solution.getAllocations())) {
-            logger.error("!!! VALIDATION: Same major subject with same teacher but different sections scheduled on same day!");
-            return true;
+            logger.warn("!!! VALIDATION: Same major subject with same teacher but different sections scheduled on same day!");
+            logger.info("!!! Attempting automatic reassignment to fix violation...");
+            boolean fixed = fixSameMajorSubjectSameTeacherDifferentSectionsViolations(solution);
+            if (!fixed) {
+                logger.error("!!! ERROR: Could not automatically fix violations!");
+                return true; // Still has violations after fix attempt
+            } else {
+                logger.info("!!! SUCCESS: Violations automatically fixed by reassignment!");
+                // Re-validate to ensure no new conflicts were created
+                return validateSolutionForOverlaps(solution);
+            }
         }
         
         return false;
     }
     
     /**
-     * Check if same major subject with same teacher but different sections are scheduled on the same day
-     * This violates the rule that different sections must be on different days
+     * Automatically fix violations where same major subject + same teacher + different sections are on same day
+     * by reassigning one section to a different day with the same time slots
+     */
+    private boolean fixSameMajorSubjectSameTeacherDifferentSectionsViolations(ScheduleSolution solution) {
+        if (solution.getAllocations() == null) return false;
+        
+        // Get all timeslots from the solution
+        List<Timeslot> allTimeslots = solution.getTimeslots();
+        if (allTimeslots == null || allTimeslots.isEmpty()) {
+            logger.error("!!! No timeslots available for reassignment!");
+            return false;
+        }
+        
+        // Group by teacher and subject code
+        Map<String, Map<String, List<Allocation>>> byTeacherAndSubject = 
+            solution.getAllocations().stream()
+                .filter(a -> a.isMajor() && a.getTeacher() != null && a.getSubjectCode() != null && 
+                           a.getSection() != null && a.getTimeslot() != null && !a.isPinned())
+                .collect(Collectors.groupingBy(
+                    a -> a.getTeacher().getId(),
+                    Collectors.groupingBy(Allocation::getSubjectCode)
+                ));
+        
+        boolean anyFixed = false;
+        
+        for (Map.Entry<String, Map<String, List<Allocation>>> teacherEntry : byTeacherAndSubject.entrySet()) {
+            for (Map.Entry<String, List<Allocation>> subjectEntry : teacherEntry.getValue().entrySet()) {
+                List<Allocation> allocs = subjectEntry.getValue();
+                if (allocs.size() < 2) continue;
+                
+                // Group by section
+                Map<String, List<Allocation>> bySection = allocs.stream()
+                    .collect(Collectors.groupingBy(a -> a.getSection().getId()));
+                
+                if (bySection.size() < 2) continue; // Only one section
+                
+                // Group by day to find conflicts
+                Map<DayOfWeek, List<Allocation>> byDay = allocs.stream()
+                    .collect(Collectors.groupingBy(a -> a.getTimeslot().getDayOfWeek()));
+                
+                // Find days with multiple sections
+                for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : byDay.entrySet()) {
+                    List<Allocation> dayAllocs = dayEntry.getValue();
+                    Set<String> sectionsOnThisDay = dayAllocs.stream()
+                        .map(a -> a.getSection().getId())
+                        .collect(Collectors.toSet());
+                    
+                    if (sectionsOnThisDay.size() > 1) {
+                        // Conflict found - need to reassign one section
+                        logger.warn("!!! FIXING: Found conflict for subject {} teacher {} - sections {} on day {}", 
+                                   subjectEntry.getKey(), teacherEntry.getKey(), sectionsOnThisDay, dayEntry.getKey());
+                        
+                        // Get the start time from one of the allocations (they should have same time)
+                        LocalTime targetStartTime = dayAllocs.get(0).getTimeslot().getStartTime();
+                        
+                        // Find a different day with the same start time available
+                        DayOfWeek newDay = findAvailableDayForReassignment(
+                            allTimeslots, dayEntry.getKey(), targetStartTime, 
+                            solution.getAllocations(), dayAllocs.get(0).getTeacher().getId());
+                        
+                        if (newDay == null) {
+                            logger.error("!!! Could not find available day for reassignment!");
+                            return false;
+                        }
+                        
+                        // Reassign all allocations from the second section to the new day
+                        // Keep the first section on the original day
+                        // Reassign the section that appears later in the list
+                        List<String> sectionList = new ArrayList<>(sectionsOnThisDay);
+                        if (sectionList.size() > 1) {
+                            final String sectionToReassign = sectionList.get(1); // Reassign second section
+                            
+                            // Find all allocations for this section on this day
+                            List<Allocation> toReassign = dayAllocs.stream()
+                                .filter(a -> a.getSection().getId().equals(sectionToReassign))
+                                .collect(Collectors.toList());
+                            
+                            // Reassign each allocation
+                            for (Allocation alloc : toReassign) {
+                                Timeslot newTimeslot = findTimeslotForReassignment(
+                                    allTimeslots, newDay, targetStartTime, alloc.getDurationInMinutes());
+                                
+                                if (newTimeslot != null) {
+                                    logger.info("!!! REASSIGNING: {} for section {} from {} {} to {} {}", 
+                                              alloc.getSubjectCode(), alloc.getSection().getSectionName(),
+                                              dayEntry.getKey(), targetStartTime, newDay, targetStartTime);
+                                    alloc.setTimeslot(newTimeslot);
+                                    anyFixed = true;
+                                } else {
+                                    logger.error("!!! Could not find timeslot for reassignment!");
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return anyFixed;
+    }
+    
+    /**
+     * Find an available day for reassignment that has the same start time available
+     */
+    private DayOfWeek findAvailableDayForReassignment(List<Timeslot> allTimeslots, DayOfWeek currentDay, 
+                                                       LocalTime startTime, List<Allocation> allAllocations, 
+                                                       String teacherId) {
+        // Get all days except the current day
+        List<DayOfWeek> availableDays = List.of(
+            DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, 
+            DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY
+        ).stream()
+            .filter(day -> !day.equals(currentDay))
+            .collect(Collectors.toList());
+        
+        // Check each day to see if the start time is available for this teacher
+        for (DayOfWeek day : availableDays) {
+            // Check if there's a timeslot with this start time on this day
+            boolean hasTimeslot = allTimeslots.stream()
+                .anyMatch(ts -> ts.getDayOfWeek().equals(day) && ts.getStartTime().equals(startTime));
+            
+            if (!hasTimeslot) continue;
+            
+            // Check if the teacher is already scheduled at this time on this day
+            boolean teacherAvailable = allAllocations.stream()
+                .filter(a -> a.getTeacher() != null && a.getTeacher().getId().equals(teacherId))
+                .filter(a -> a.getTimeslot() != null && a.getTimeslot().getDayOfWeek().equals(day))
+                .noneMatch(a -> {
+                    LocalTime allocStart = a.getTimeslot().getStartTime();
+                    LocalTime allocEnd = allocStart.plusMinutes(a.getDurationInMinutes());
+                    // Check if there's an overlap
+                    return (startTime.isBefore(allocEnd) || startTime.equals(allocStart)) && 
+                           (allocStart.isBefore(startTime.plusMinutes(90)) || allocStart.equals(startTime));
+                });
+            
+            if (teacherAvailable) {
+                logger.info("!!! Found available day: {} for reassignment", day);
+                return day;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Find a timeslot for reassignment with the specified day and start time
+     */
+    private Timeslot findTimeslotForReassignment(List<Timeslot> allTimeslots, DayOfWeek day, 
+                                                  LocalTime startTime, int duration) {
+        return allTimeslots.stream()
+            .filter(ts -> ts.getDayOfWeek().equals(day) && ts.getStartTime().equals(startTime))
+            .findFirst()
+            .orElse(null);
+    }
+    
+    /**
+     * Check if same major subject with same teacher but different sections violate scheduling rules
+     * Rules:
+     * 1. Different sections must be on different days
+     * 2. Different sections should be at the same time slots (e.g., both at 08:00-11:00 but on different days)
+     * This ensures proper scheduling distribution and consistency
      */
     private boolean hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(List<Allocation> allocations) {
         if (allocations == null || allocations.size() < 2) return false;
@@ -481,7 +651,7 @@ public class SchedulingService {
                 Map<DayOfWeek, List<Allocation>> byDay = allocs.stream()
                     .collect(Collectors.groupingBy(a -> a.getTimeslot().getDayOfWeek()));
                 
-                // Check if different sections are on the same day
+                // Check if different sections are on the same day (violation)
                 for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : byDay.entrySet()) {
                     List<Allocation> dayAllocs = dayEntry.getValue();
                     Set<String> sectionsOnThisDay = dayAllocs.stream()
@@ -493,6 +663,33 @@ public class SchedulingService {
                                    subjectEntry.getKey(), teacherEntry.getKey(), sectionsOnThisDay, dayEntry.getKey());
                         return true;
                     }
+                }
+                
+                // Check if different sections have different start times (violation - should be same time on different days)
+                Map<String, LocalTime> sectionStartTimes = new HashMap<>();
+                for (Allocation alloc : allocs) {
+                    String sectionId = alloc.getSection().getId();
+                    LocalTime startTime = alloc.getTimeslot().getStartTime();
+                    
+                    if (sectionStartTimes.containsKey(sectionId)) {
+                        // Multiple sessions for same section - check if they're sequential
+                        LocalTime existingTime = sectionStartTimes.get(sectionId);
+                        if (!existingTime.equals(startTime)) {
+                            // Different times for same section - this is OK if sequential, but we check consistency
+                            // For now, we'll allow multiple times per section (sequential sessions)
+                            continue;
+                        }
+                    } else {
+                        sectionStartTimes.put(sectionId, startTime);
+                    }
+                }
+                
+                // Check if different sections have different start times
+                Set<LocalTime> uniqueStartTimes = new java.util.HashSet<>(sectionStartTimes.values());
+                if (uniqueStartTimes.size() > 1 && sectionStartTimes.size() > 1) {
+                    logger.error("!!! VALIDATION: Subject {} for teacher {} has different sections with different start times: {}", 
+                               subjectEntry.getKey(), teacherEntry.getKey(), sectionStartTimes);
+                    return true;
                 }
             }
         }
