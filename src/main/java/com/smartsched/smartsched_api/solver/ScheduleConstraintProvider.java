@@ -4,6 +4,7 @@ import java.time.DayOfWeek;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 import java.io.FileWriter;
 import java.io.IOException;
 
@@ -96,7 +97,8 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 // --- NEW CONSTRAINTS FOR TEACHER MAJOR SUBJECTS ---
                 majorSubjectsSameTeacherSequential(constraintFactory),
                 maxThreeMajorSubjectsPerDayPerTeacher(constraintFactory),
-                sameMajorSubjectSameTeacherSameClassroom(constraintFactory)
+                sameMajorSubjectSameTeacherSameClassroom(constraintFactory),
+                sameMajorSubjectSameTeacherDifferentSectionsDifferentDays(constraintFactory)
         };
     }
     
@@ -1044,5 +1046,95 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     return 1;
                 })
                 .asConstraint("Same major subject same teacher same classroom");
+    }
+
+    /**
+     * Same major subject with same teacher but different sections must be on different days
+     * Rule: If a teacher teaches the same major subject to different sections, they must be scheduled on different days
+     * This prevents overlaps and ensures proper scheduling distribution
+     */
+    private Constraint sameMajorSubjectSameTeacherDifferentSectionsDifferentDays(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> alloc.isMajor() && alloc.getTimeslot() != null && 
+                               alloc.getTeacher() != null && alloc.getSection() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSubjectCode))
+                .filter((alloc1, alloc2) -> {
+                    // #region agent log
+                    Map<String, Object> logData = new HashMap<>();
+                    logData.put("alloc1Id", alloc1.getId());
+                    logData.put("alloc1Subject", alloc1.getSubjectCode());
+                    logData.put("alloc1Section", alloc1.getSection().getSectionName());
+                    logData.put("alloc1Pinned", alloc1.isPinned());
+                    logData.put("alloc1Day", alloc1.getTimeslot().getDayOfWeek().toString());
+                    logData.put("alloc2Id", alloc2.getId());
+                    logData.put("alloc2Subject", alloc2.getSubjectCode());
+                    logData.put("alloc2Section", alloc2.getSection().getSectionName());
+                    logData.put("alloc2Pinned", alloc2.isPinned());
+                    logData.put("alloc2Day", alloc2.getTimeslot().getDayOfWeek().toString());
+                    logData.put("teacher", alloc1.getTeacher().getName());
+                    logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:JOIN", 
+                            "Checking same major subject same teacher different sections", logData);
+                    // #endregion
+                    
+                    if (alloc1.getId().equals(alloc2.getId())) {
+                        // #region agent log
+                        logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:SAME_ALLOC", 
+                                "Same allocation, skipping", Map.of());
+                        // #endregion
+                        return false;
+                    }
+                    
+                    if (alloc1.getSection() == null || alloc2.getSection() == null) return false;
+                    if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
+                    
+                    // Check if they are different sections
+                    boolean differentSections = !alloc1.getSection().getId().equals(alloc2.getSection().getId());
+                    
+                    if (!differentSections) {
+                        // #region agent log
+                        logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:SAME_SECTION", 
+                                "Same section, skipping", Map.of());
+                        // #endregion
+                        return false; // Only apply to different sections
+                    }
+                    
+                    // Check if they are on the same day - this is a violation
+                    boolean sameDay = alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
+                    
+                    // #region agent log
+                    logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:CHECK", 
+                            "Checking if same day", Map.of(
+                        "differentSections", differentSections,
+                        "sameDay", sameDay,
+                        "violation", sameDay
+                    ));
+                    // #endregion
+                    
+                    if (sameDay) {
+                        logger.warn("!!! SAME MAJOR SUBJECT SAME TEACHER DIFFERENT SECTIONS SAME DAY VIOLATION: {} for teacher {} - {} and {} both on {}", 
+                                   alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
+                                   alloc1.getSection().getSectionName(), alloc2.getSection().getSectionName(),
+                                   alloc1.getTimeslot().getDayOfWeek());
+                        // #region agent log
+                        logDebug("F", "ScheduleConstraintProvider.sameMajorSubjectSameTeacherDifferentSectionsDifferentDays:VIOLATION", 
+                                "Violation detected", Map.of(
+                            "alloc1Section", alloc1.getSection().getSectionName(),
+                            "alloc2Section", alloc2.getSection().getSectionName(),
+                            "day", alloc1.getTimeslot().getDayOfWeek().toString()
+                        ));
+                        // #endregion
+                    }
+                    
+                    return sameDay; // Violation if same day
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! PENALIZING SAME MAJOR SUBJECT SAME TEACHER DIFFERENT SECTIONS SAME DAY: {} for teacher {} - {} and {}", 
+                               alloc1.getSubjectCode(), alloc1.getTeacher().getName(),
+                               alloc1.getSection().getSectionName(), alloc2.getSection().getSectionName());
+                    return 1;
+                })
+                .asConstraint("Same major subject same teacher different sections different days");
     }
 }
