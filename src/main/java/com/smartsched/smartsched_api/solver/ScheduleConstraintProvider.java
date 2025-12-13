@@ -25,6 +25,10 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     private static final Logger logger = LoggerFactory.getLogger(ScheduleConstraintProvider.class);
     private static final LocalTime MAX_END_TIME = LocalTime.of(20, 30);
     private static final LocalTime MIN_TIME = LocalTime.MIN;
+    private static final LocalTime AM_START = LocalTime.of(8, 0);
+    private static final LocalTime AM_END = LocalTime.of(12, 30);
+    private static final LocalTime PM_START = LocalTime.of(13, 0);
+    private static final LocalTime PM_END = LocalTime.of(20, 30);
     private static final String DEBUG_LOG_PATH = "c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log";
     
     // #region agent log
@@ -91,12 +95,14 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 avoidLateEveningClasses(constraintFactory),
                 optimizeClassroomUtilization(constraintFactory),
                 // --- NEW CONSTRAINTS FOR SCHEDULING RULES ---
-                maxSixMajorSubjectsPerDayPerSection(constraintFactory),
+                sectionMajorSubjectsAMPMDistribution(constraintFactory),
+                sectionMajorSubjectsSequentialInSession(constraintFactory),
                 majorSubjectsSameTeacherSectionSequential(constraintFactory),
                 nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory),
                 // --- NEW CONSTRAINTS FOR TEACHER MAJOR SUBJECTS ---
                 majorSubjectsSameTeacherSequential(constraintFactory),
-                maxThreeMajorSubjectsPerDayPerTeacher(constraintFactory),
+                teacherMajorSubjectsAMPMDistribution(constraintFactory),
+                teacherMajorSubjectsSequentialInSession(constraintFactory),
                 sameMajorSubjectSameTeacherSameClassroom(constraintFactory),
                 sameMajorSubjectSameTeacherDifferentSectionsDifferentDays(constraintFactory)
         };
@@ -810,47 +816,131 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     }
 
     /**
-     * Maximum 6 major subjects per day per section
-     * Rule: Allow only 6 major subjects to be held on the same day per section
+     * Helper method to determine if a time is in AM session (8:00 AM - 12:30 PM)
      */
-    private Constraint maxSixMajorSubjectsPerDayPerSection(ConstraintFactory constraintFactory) {
+    private boolean isAMSession(LocalTime time) {
+        return !time.isBefore(AM_START) && time.isBefore(AM_END);
+    }
+    
+    /**
+     * Helper method to determine if a time is in PM session (1:00 PM - 8:30 PM)
+     */
+    private boolean isPMSession(LocalTime time) {
+        return !time.isBefore(PM_START) && !time.isAfter(PM_END);
+    }
+    
+    /**
+     * Section major subjects AM/PM distribution
+     * Rule: Sections must have exactly 2 major subjects in AM session and 4 in PM session per day
+     */
+    private Constraint sectionMajorSubjectsAMPMDistribution(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getSection() != null)
                 .groupBy(
                     alloc -> alloc.getSection(),
                     alloc -> alloc.getTimeslot().getDayOfWeek(),
+                    alloc -> {
+                        LocalTime startTime = alloc.getTimeslot().getStartTime();
+                        return isAMSession(startTime) ? "AM" : (isPMSession(startTime) ? "PM" : "OTHER");
+                    },
                     ConstraintCollectors.count()
                 )
-                .filter((section, day, count) -> {
+                .filter((section, day, session, count) -> {
                     // #region agent log
-                    logDebug("I", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerSection:FILTER", 
-                            "Checking section major subject count", Map.of(
+                    logDebug("K", "ScheduleConstraintProvider.sectionMajorSubjectsAMPMDistribution:FILTER", 
+                            "Checking section major subject distribution", Map.of(
                         "sectionId", section.getId(),
                         "sectionName", section.getSectionName(),
                         "day", day.toString(),
+                        "session", session,
                         "count", count,
-                        "maxAllowed", 6,
-                        "violation", count > 6
+                        "expectedAM", 2,
+                        "expectedPM", 4,
+                        "violation", (session.equals("AM") && count != 2) || (session.equals("PM") && count != 4)
                     ));
                     // #endregion
-                    return count > 6;
+                    // AM should have exactly 2, PM should have exactly 4
+                    if (session.equals("AM")) {
+                        return count != 2;
+                    } else if (session.equals("PM")) {
+                        return count != 4;
+                    }
+                    return false; // Ignore "OTHER" session
                 })
-                .penalize(HardSoftScore.ONE_HARD, (section, day, count) -> {
-                    logger.warn("!!! MAX MAJOR SUBJECTS VIOLATION: Section {} has {} major subjects on {} (max: 6)", 
-                               section.getSectionName(), count, day);
+                .penalize(HardSoftScore.ONE_HARD, (section, day, session, count) -> {
+                    int expected = session.equals("AM") ? 2 : 4;
+                    logger.warn("!!! SECTION AM/PM DISTRIBUTION VIOLATION: Section {} has {} major subjects in {} session on {} (expected: {})", 
+                               section.getSectionName(), count, session, day, expected);
                     // #region agent log
-                    logDebug("I", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerSection:PENALIZE", 
+                    logDebug("K", "ScheduleConstraintProvider.sectionMajorSubjectsAMPMDistribution:PENALIZE", 
                             "Applying penalty for section", Map.of(
                         "sectionId", section.getId(),
                         "sectionName", section.getSectionName(),
                         "day", day.toString(),
+                        "session", session,
                         "count", count,
-                        "penalty", (int)(count - 6)
+                        "expected", expected,
+                        "penalty", Math.abs(count - expected)
                     ));
                     // #endregion
-                    return (int)(count - 6); // Penalty increases with each subject over 6
+                    return Math.abs(count - expected); // Penalty based on deviation from expected
                 })
-                .asConstraint("Maximum 6 major subjects per day per section");
+                .asConstraint("Section major subjects AM/PM distribution (2 AM, 4 PM)");
+    }
+    
+    /**
+     * Section major subjects must be sequential within each session (AM or PM)
+     * Rule: Major subjects in the same session must be scheduled sequentially
+     */
+    private Constraint sectionMajorSubjectsSequentialInSession(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getSection() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getSection),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()))
+                .filter((alloc1, alloc2) -> {
+                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
+                    
+                    LocalTime start1 = alloc1.getTimeslot().getStartTime();
+                    LocalTime start2 = alloc2.getTimeslot().getStartTime();
+                    
+                    // Check if they are in the same session
+                    boolean bothAM = isAMSession(start1) && isAMSession(start2);
+                    boolean bothPM = isPMSession(start1) && isPMSession(start2);
+                    
+                    if (!bothAM && !bothPM) return false; // Different sessions, no constraint
+                    
+                    // Check if sequential: end1 == start2 OR end2 == start1
+                    LocalTime end1 = start1.plusMinutes(alloc1.getDurationInMinutes());
+                    LocalTime end2 = start2.plusMinutes(alloc2.getDurationInMinutes());
+                    boolean sequential = end1.equals(start2) || end2.equals(start1);
+                    
+                    // #region agent log
+                    if (!sequential) {
+                        logDebug("K", "ScheduleConstraintProvider.sectionMajorSubjectsSequentialInSession:VIOLATION", 
+                                "Non-sequential major subjects in same session", Map.of(
+                            "sectionId", alloc1.getSection().getId(),
+                            "sectionName", alloc1.getSection().getSectionName(),
+                            "day", alloc1.getTimeslot().getDayOfWeek().toString(),
+                            "session", bothAM ? "AM" : "PM",
+                            "alloc1Subject", alloc1.getSubjectCode(),
+                            "alloc1Time", start1.toString() + "-" + end1.toString(),
+                            "alloc2Subject", alloc2.getSubjectCode(),
+                            "alloc2Time", start2.toString() + "-" + end2.toString()
+                        ));
+                    }
+                    // #endregion
+                    
+                    return !sequential; // Penalize if not sequential
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! SECTION SEQUENTIAL VIOLATION: {} and {} for section {} on {} - not sequential in same session", 
+                               alloc1.getSubjectCode(), alloc2.getSubjectCode(),
+                               alloc1.getSection().getSectionName(), alloc1.getTimeslot().getDayOfWeek());
+                    return 1;
+                })
+                .asConstraint("Section major subjects sequential in session");
     }
 
     /**
@@ -1017,25 +1107,117 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
     }
 
     /**
-     * Maximum 6 major subjects per day per teacher
-     * Rule: Teachers should only have 6 major subjects scheduled per day
+     * Teacher major subjects AM/PM distribution
+     * Rule: Teachers must have exactly 2 major subjects in AM session and 4 in PM session per day
      */
-    private Constraint maxThreeMajorSubjectsPerDayPerTeacher(ConstraintFactory constraintFactory) {
+    private Constraint teacherMajorSubjectsAMPMDistribution(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
-                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
-                               alloc.getTeacher() != null)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getTeacher() != null)
                 .groupBy(
                     alloc -> alloc.getTeacher(),
                     alloc -> alloc.getTimeslot().getDayOfWeek(),
+                    alloc -> {
+                        LocalTime startTime = alloc.getTimeslot().getStartTime();
+                        return isAMSession(startTime) ? "AM" : (isPMSession(startTime) ? "PM" : "OTHER");
+                    },
                     ConstraintCollectors.count()
                 )
-                .filter((teacher, day, count) -> count > 6)
-                .penalize(HardSoftScore.ONE_HARD, (teacher, day, count) -> {
-                    logger.warn("!!! MAX MAJOR SUBJECTS PER TEACHER VIOLATION: Teacher {} has {} major subjects on {}", 
-                               teacher.getName(), count, day);
-                    return (int)(count - 6); // Penalty increases with each subject over 6
+                .filter((teacher, day, session, count) -> {
+                    // #region agent log
+                    logDebug("L", "ScheduleConstraintProvider.teacherMajorSubjectsAMPMDistribution:FILTER", 
+                            "Checking teacher major subject distribution", Map.of(
+                        "teacherId", teacher.getId(),
+                        "teacherName", teacher.getName(),
+                        "day", day.toString(),
+                        "session", session,
+                        "count", count,
+                        "expectedAM", 2,
+                        "expectedPM", 4,
+                        "violation", (session.equals("AM") && count != 2) || (session.equals("PM") && count != 4)
+                    ));
+                    // #endregion
+                    // AM should have exactly 2, PM should have exactly 4
+                    if (session.equals("AM")) {
+                        return count != 2;
+                    } else if (session.equals("PM")) {
+                        return count != 4;
+                    }
+                    return false; // Ignore "OTHER" session
                 })
-                .asConstraint("Maximum 6 major subjects per day per teacher");
+                .penalize(HardSoftScore.ONE_HARD, (teacher, day, session, count) -> {
+                    int expected = session.equals("AM") ? 2 : 4;
+                    logger.warn("!!! TEACHER AM/PM DISTRIBUTION VIOLATION: Teacher {} has {} major subjects in {} session on {} (expected: {})", 
+                               teacher.getName(), count, session, day, expected);
+                    // #region agent log
+                    logDebug("L", "ScheduleConstraintProvider.teacherMajorSubjectsAMPMDistribution:PENALIZE", 
+                            "Applying penalty for teacher", Map.of(
+                        "teacherId", teacher.getId(),
+                        "teacherName", teacher.getName(),
+                        "day", day.toString(),
+                        "session", session,
+                        "count", count,
+                        "expected", expected,
+                        "penalty", Math.abs(count - expected)
+                    ));
+                    // #endregion
+                    return Math.abs(count - expected); // Penalty based on deviation from expected
+                })
+                .asConstraint("Teacher major subjects AM/PM distribution (2 AM, 4 PM)");
+    }
+    
+    /**
+     * Teacher major subjects must be sequential within each session (AM or PM)
+     * Rule: Major subjects for the same teacher in the same session must be scheduled sequentially
+     */
+    private Constraint teacherMajorSubjectsSequentialInSession(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Allocation.class)
+                .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getTeacher() != null)
+                .join(Allocation.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(Allocation::getTeacher),
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(a -> a.getTimeslot().getDayOfWeek()))
+                .filter((alloc1, alloc2) -> {
+                    if (alloc1.getId().equals(alloc2.getId())) return false;
+                    if (alloc1.getTimeslot() == null || alloc2.getTimeslot() == null) return false;
+                    
+                    LocalTime start1 = alloc1.getTimeslot().getStartTime();
+                    LocalTime start2 = alloc2.getTimeslot().getStartTime();
+                    
+                    // Check if they are in the same session
+                    boolean bothAM = isAMSession(start1) && isAMSession(start2);
+                    boolean bothPM = isPMSession(start1) && isPMSession(start2);
+                    
+                    if (!bothAM && !bothPM) return false; // Different sessions, no constraint
+                    
+                    // Check if sequential: end1 == start2 OR end2 == start1
+                    LocalTime end1 = start1.plusMinutes(alloc1.getDurationInMinutes());
+                    LocalTime end2 = start2.plusMinutes(alloc2.getDurationInMinutes());
+                    boolean sequential = end1.equals(start2) || end2.equals(start1);
+                    
+                    // #region agent log
+                    if (!sequential) {
+                        logDebug("L", "ScheduleConstraintProvider.teacherMajorSubjectsSequentialInSession:VIOLATION", 
+                                "Non-sequential major subjects in same session", Map.of(
+                            "teacherId", alloc1.getTeacher().getId(),
+                            "teacherName", alloc1.getTeacher().getName(),
+                            "day", alloc1.getTimeslot().getDayOfWeek().toString(),
+                            "session", bothAM ? "AM" : "PM",
+                            "alloc1Subject", alloc1.getSubjectCode(),
+                            "alloc1Time", start1.toString() + "-" + end1.toString(),
+                            "alloc2Subject", alloc2.getSubjectCode(),
+                            "alloc2Time", start2.toString() + "-" + end2.toString()
+                        ));
+                    }
+                    // #endregion
+                    
+                    return !sequential; // Penalize if not sequential
+                })
+                .penalize(HardSoftScore.ONE_HARD, (alloc1, alloc2) -> {
+                    logger.warn("!!! TEACHER SEQUENTIAL VIOLATION: {} and {} for teacher {} on {} - not sequential in same session", 
+                               alloc1.getSubjectCode(), alloc2.getSubjectCode(),
+                               alloc1.getTeacher().getName(), alloc1.getTimeslot().getDayOfWeek());
+                    return 1;
+                })
+                .asConstraint("Teacher major subjects sequential in session");
     }
 
     /**
