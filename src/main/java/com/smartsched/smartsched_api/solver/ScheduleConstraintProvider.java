@@ -885,7 +885,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     // #endregion
                     return Math.abs(count - expected); // Penalty based on deviation from expected
                 })
-                .asConstraint("Section major subjects AM/PM distribution (2 AM, 4 PM)");
+                .asConstraint("Section major subjects AM-PM distribution 2 AM 4 PM");
     }
     
     /**
@@ -1162,7 +1162,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     // #endregion
                     return Math.abs(count - expected); // Penalty based on deviation from expected
                 })
-                .asConstraint("Teacher major subjects AM/PM distribution (2 AM, 4 PM)");
+                .asConstraint("Teacher major subjects AM-PM distribution (2 AM, 4 PM)");
     }
     
     /**
