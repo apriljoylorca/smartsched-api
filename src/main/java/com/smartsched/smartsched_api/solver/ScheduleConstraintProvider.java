@@ -84,19 +84,19 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 forceNonMajorSameTimeDifferentDays(constraintFactory),
                 rewardNonMajorSameTimeDifferentDays(constraintFactory),
                 forceMajorSameDay(constraintFactory),
-                // forceMajorSequential(constraintFactory), // DISABLED: Allow non-sequential timeslots for major subjects
-                rewardMajorSequentialSameDay(constraintFactory), // Keep reward (soft preference, not requirement)
+                forceMajorSequential(constraintFactory),
+                rewardMajorSequentialSameDay(constraintFactory),
                 preferConsistentTimeForNonMajor(constraintFactory),
                 preferConsistentTimeForMajor(constraintFactory),
                 avoidLateEveningClasses(constraintFactory),
                 optimizeClassroomUtilization(constraintFactory),
                 // --- NEW CONSTRAINTS FOR SCHEDULING RULES ---
-                maxSixMajorSubjectsPerDayPerSection(constraintFactory),
-                // majorSubjectsSameTeacherSectionSequential(constraintFactory), // DISABLED: Allow non-sequential timeslots for major subjects
+                maxTwoMajorSubjectsPerDayPerSection(constraintFactory),
+                majorSubjectsSameTeacherSectionSequential(constraintFactory),
                 nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory),
                 // --- NEW CONSTRAINTS FOR TEACHER MAJOR SUBJECTS ---
-                // majorSubjectsSameTeacherSequential(constraintFactory), // DISABLED: Allow non-sequential timeslots for major subjects
-                maxSixMajorSubjectsPerDayPerTeacher(constraintFactory),
+                majorSubjectsSameTeacherSequential(constraintFactory),
+                maxThreeMajorSubjectsPerDayPerTeacher(constraintFactory),
                 sameMajorSubjectSameTeacherSameClassroom(constraintFactory),
                 sameMajorSubjectSameTeacherDifferentSectionsDifferentDays(constraintFactory)
         };
@@ -813,7 +813,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
      * Maximum 6 major subjects per day per section
      * Rule: Allow only 6 major subjects to be held on the same day per section
      */
-    private Constraint maxSixMajorSubjectsPerDayPerSection(ConstraintFactory constraintFactory) {
+    private Constraint maxTwoMajorSubjectsPerDayPerSection(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getSection() != null)
                 .groupBy(
@@ -823,7 +823,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 )
                 .filter((section, day, count) -> {
                     // #region agent log
-                    logDebug("G", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerSection:FILTER", 
+                    logDebug("I", "ScheduleConstraintProvider.maxTwoMajorSubjectsPerDayPerSection:FILTER", 
                             "Checking section major subject count", Map.of(
                         "sectionId", section.getId(),
                         "sectionName", section.getSectionName(),
@@ -839,7 +839,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     logger.warn("!!! MAX MAJOR SUBJECTS VIOLATION: Section {} has {} major subjects on {} (max: 6)", 
                                section.getSectionName(), count, day);
                     // #region agent log
-                    logDebug("G", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerSection:PENALIZE", 
+                    logDebug("I", "ScheduleConstraintProvider.maxTwoMajorSubjectsPerDayPerSection:PENALIZE", 
                             "Applying penalty for section", Map.of(
                         "sectionId", section.getId(),
                         "sectionName", section.getSectionName(),
@@ -1020,7 +1020,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
      * Maximum 6 major subjects per day per teacher
      * Rule: Teachers should only have 6 major subjects scheduled per day
      */
-    private Constraint maxSixMajorSubjectsPerDayPerTeacher(ConstraintFactory constraintFactory) {
+    private Constraint maxThreeMajorSubjectsPerDayPerTeacher(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && 
                                alloc.getTeacher() != null)
@@ -1029,33 +1029,10 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     alloc -> alloc.getTimeslot().getDayOfWeek(),
                     ConstraintCollectors.count()
                 )
-                .filter((teacher, day, count) -> {
-                    // #region agent log
-                    logDebug("H", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerTeacher:FILTER", 
-                            "Checking teacher major subject count", Map.of(
-                        "teacherId", teacher.getId(),
-                        "teacherName", teacher.getName(),
-                        "day", day.toString(),
-                        "count", count,
-                        "maxAllowed", 6,
-                        "violation", count > 6
-                    ));
-                    // #endregion
-                    return count > 6;
-                })
+                .filter((teacher, day, count) -> count > 6)
                 .penalize(HardSoftScore.ONE_HARD, (teacher, day, count) -> {
-                    logger.warn("!!! MAX MAJOR SUBJECTS PER TEACHER VIOLATION: Teacher {} has {} major subjects on {} (max: 6)", 
+                    logger.warn("!!! MAX MAJOR SUBJECTS PER TEACHER VIOLATION: Teacher {} has {} major subjects on {}", 
                                teacher.getName(), count, day);
-                    // #region agent log
-                    logDebug("H", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerTeacher:PENALIZE", 
-                            "Applying penalty for teacher", Map.of(
-                        "teacherId", teacher.getId(),
-                        "teacherName", teacher.getName(),
-                        "day", day.toString(),
-                        "count", count,
-                        "penalty", (int)(count - 6)
-                    ));
-                    // #endregion
                     return (int)(count - 6); // Penalty increases with each subject over 6
                 })
                 .asConstraint("Maximum 6 major subjects per day per teacher");
