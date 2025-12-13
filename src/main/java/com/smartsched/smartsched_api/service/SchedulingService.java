@@ -184,6 +184,28 @@ public class SchedulingService {
         // --- END PINNED ALLOCATION LOGIC ---
 
         logger.info("Created {} total allocations (new and pinned).", allocations.size());
+        
+        // #region agent log - Integration verification
+        long majorSubjectCount = allocations.stream().filter(a -> !a.isPinned() && a.isMajor()).count();
+        long nonMajorSubjectCount = allocations.stream().filter(a -> !a.isPinned() && !a.isMajor()).count();
+        long pinnedAllocationCount = allocations.stream().filter(a -> a.isPinned()).count();
+        try {
+            java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
+            fw.write("{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"J\",\"location\":\"SchedulingService.solveAndSave:INTEGRATION_CHECK\",\"message\":\"Integration check before solver\",\"data\":{" +
+                "\"problemId\":\"" + problemId + "\"," +
+                "\"sectionId\":\"" + sectionId + "\"," +
+                "\"totalAllocations\":" + allocations.size() + "," +
+                "\"majorSubjectAllocations\":" + majorSubjectCount + "," +
+                "\"nonMajorSubjectAllocations\":" + nonMajorSubjectCount + "," +
+                "\"pinnedAllocations\":" + pinnedAllocationCount + "," +
+                "\"totalTeachers\":" + allTeachers.size() + "," +
+                "\"totalClassrooms\":" + allClassrooms.size() + "," +
+                "\"totalTimeslots\":" + allTimeslots.size() +
+                "},\"timestamp\":" + System.currentTimeMillis() + "}\n");
+            fw.close();
+        } catch (Exception e) {}
+        // #endregion
+        
         ScheduleSolution problem = new ScheduleSolution(allTimeslots, allClassrooms, allTeachers, allSections, allocations);
 
         solverManager.solveAndListen(

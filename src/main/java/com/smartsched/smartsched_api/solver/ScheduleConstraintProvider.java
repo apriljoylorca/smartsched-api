@@ -91,7 +91,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 avoidLateEveningClasses(constraintFactory),
                 optimizeClassroomUtilization(constraintFactory),
                 // --- NEW CONSTRAINTS FOR SCHEDULING RULES ---
-                maxTwoMajorSubjectsPerDayPerSection(constraintFactory),
+                maxSixMajorSubjectsPerDayPerSection(constraintFactory),
                 majorSubjectsSameTeacherSectionSequential(constraintFactory),
                 nonMajorSubjectsSameTeacherSectionSameTimeDifferentDays(constraintFactory),
                 // --- NEW CONSTRAINTS FOR TEACHER MAJOR SUBJECTS ---
@@ -813,7 +813,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
      * Maximum 6 major subjects per day per section
      * Rule: Allow only 6 major subjects to be held on the same day per section
      */
-    private Constraint maxTwoMajorSubjectsPerDayPerSection(ConstraintFactory constraintFactory) {
+    private Constraint maxSixMajorSubjectsPerDayPerSection(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
                 .filter(alloc -> !alloc.isPinned() && alloc.isMajor() && alloc.getTimeslot() != null && alloc.getSection() != null)
                 .groupBy(
@@ -823,7 +823,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 )
                 .filter((section, day, count) -> {
                     // #region agent log
-                    logDebug("I", "ScheduleConstraintProvider.maxTwoMajorSubjectsPerDayPerSection:FILTER", 
+                    logDebug("I", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerSection:FILTER", 
                             "Checking section major subject count", Map.of(
                         "sectionId", section.getId(),
                         "sectionName", section.getSectionName(),
@@ -839,7 +839,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     logger.warn("!!! MAX MAJOR SUBJECTS VIOLATION: Section {} has {} major subjects on {} (max: 6)", 
                                section.getSectionName(), count, day);
                     // #region agent log
-                    logDebug("I", "ScheduleConstraintProvider.maxTwoMajorSubjectsPerDayPerSection:PENALIZE", 
+                    logDebug("I", "ScheduleConstraintProvider.maxSixMajorSubjectsPerDayPerSection:PENALIZE", 
                             "Applying penalty for section", Map.of(
                         "sectionId", section.getId(),
                         "sectionName", section.getSectionName(),
