@@ -21,7 +21,6 @@ public class ScheduleInput {
         this.sectionId = sectionId;
         this.classHoursPerWeek = classHoursPerWeek;
         this.isMajor = isMajor;
-        System.out.println("@@@ ScheduleInput Constructor: " + subjectCode + " | isMajor: " + isMajor);
     }
 
     // Getters (Standard names)
@@ -39,13 +38,10 @@ public class ScheduleInput {
     public void setSectionId(String sectionId) { this.sectionId = sectionId; }
     public void setClassHoursPerWeek(int classHoursPerWeek) { this.classHoursPerWeek = classHoursPerWeek; }
 
-    // --- CORRECT SETTER for isMajor field ---
     // Jackson expects setIsMajor for field "isMajor"
     public void setIsMajor(boolean isMajor) { 
         this.isMajor = isMajor; 
-        System.out.println("@@@ ScheduleInput setIsMajor called: " + isMajor);
     }
-    // --- END CORRECT SETTER ---
 
 
     @Override

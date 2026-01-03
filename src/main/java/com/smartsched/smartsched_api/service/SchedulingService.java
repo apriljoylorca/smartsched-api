@@ -54,17 +54,15 @@ public class SchedulingService {
         this.scheduleRepository = scheduleRepository;
     }
 
-     // --- NEW METHOD FOR POLLING (Fix for Bug B) ---
-     public SolverStatus getSolverStatus(String problemId) {
+    public SolverStatus getSolverStatus(String problemId) {
         return solverStatusMap.getOrDefault(problemId, SolverStatus.NOT_SOLVING);
-     }
+    }
 
 
     public void solveAndSave(String problemId, String sectionId, List<ScheduleInput> scheduleInputs) {
         logger.info("Received scheduling request for problemId: {} and sectionId: {}", problemId, sectionId);
         solverStatusMap.put(problemId, SolverStatus.SOLVING_SCHEDULED);
 
-        // --- Load ALL Data for Solver ---
         Section sectionToSchedule = sectionRepository.findById(sectionId)
                 .orElseThrow(() -> {
                      logger.error("Section with ID {} not found!", sectionId);
@@ -76,17 +74,8 @@ public class SchedulingService {
         List<Classroom> allClassrooms = classroomRepository.findAll();
         List<Timeslot> allTimeslots = generateTimeslots();
         
-        // --- DEBUG: Log available classrooms and their types ---
-        logger.info("@@@ AVAILABLE CLASSROOMS:");
-        for (Classroom classroom : allClassrooms) {
-            logger.info("@@@ Classroom: {} | Type: {} | Capacity: {}", 
-                       classroom.getName(), classroom.getType(), classroom.getCapacity());
-        }
-        
-        // --- FIX FOR OVERLAPS (Bug A) ---
         List<Section> allSections = sectionRepository.findAll();
         List<Schedule> allExistingSchedules = scheduleRepository.findAll();
-        // --- END FIX ---
 
         // Create lookup maps for efficiency
         Map<String, Teacher> teacherMap = allTeachers.stream().collect(Collectors.toMap(Teacher::getId, t -> t, (t1, t2) -> t1));
@@ -124,7 +113,7 @@ public class SchedulingService {
             }
         }
         
-        // --- CONVERT EXISTING SCHEDULES TO PINNED ALLOCATIONS (Fix for Bug A) ---
+        // Convert existing schedules to pinned allocations
         logger.info("Converting {} existing schedules to PINNED allocations...", allExistingSchedules.size());
         int pinnedCount = 0;
         for (Schedule existing : allExistingSchedules) {
@@ -164,24 +153,18 @@ public class SchedulingService {
                     existing.getSubjectCode(), existing.getSubjectName(),
                     teacher, section, duration,
                     isMajor, // Set isMajor based on classroom type for pinned allocations
-                    true // --- THIS IS PINNED ---
+                    true // This is pinned
                 );
                 pinnedAllocation.setTimeslot(timeslot);
                 pinnedAllocation.setClassroom(classroom);
                 allocations.add(pinnedAllocation);
                 pinnedCount++;
-                logger.info("@@@ PINNED ALLOCATION CREATED: Subject={}, Section={}, Teacher={}, Classroom={}, Day={}, Time={}-{}, Timeslot={}", 
-                           existing.getSubjectCode(), section.getSectionName(), 
-                           teacher != null ? teacher.getName() : "null",
-                           classroom != null ? classroom.getName() : "null",
-                           existing.getDayOfWeek(), startTime, endTime, timeslotKey);
             } else {
                  logger.warn("Could not create pinned allocation for existing schedule ID {}. Missing data (Classroom: {}, Section: {}, Timeslot: {} (key: {}), Duration: {})", 
                     existing.getId(), classroom != null, section != null, timeslot != null, timeslotKey, duration);
             }
         }
         logger.info("Created {} pinned allocations from existing schedules.", pinnedCount);
-        // --- END PINNED ALLOCATION LOGIC ---
 
         logger.info("Created {} total allocations (new and pinned).", allocations.size());
         
@@ -242,14 +225,10 @@ public class SchedulingService {
             } catch (Exception e) {}
             // #endregion
             HardSoftScore finalScore = finalBestSolution.getScore();
-            logger.info("!!! Solver finished for problemId: {}. FINAL SCORE received: {} !!!", problemId, finalScore);
-            logger.warn("@@@ FINAL SCORE ANALYSIS: Hard score={}, Soft score={}, Is feasible={}", 
-                       finalScore.hardScore(), finalScore.softScore(), finalScore.isFeasible());
+            logger.info("Solver finished for problemId: {}. Final score: {}", problemId, finalScore);
             
             // Additional validation: manually check for overlaps
-            logger.info("@@@ saveSolution: Starting validation...");
             boolean hasOverlaps = validateSolutionForOverlaps(finalBestSolution);
-            logger.info("@@@ saveSolution: Validation result: hasOverlaps={}", hasOverlaps);
             // #region agent log
             try {
                 java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
@@ -272,7 +251,6 @@ public class SchedulingService {
             }
             solverStatusMap.put(problemId, SolverStatus.NOT_SOLVING);
 
-            // --- THIS IS THE FIX: Declare solvedSectionId BEFORE using it ---
             String solvedSectionId = null;
             for(Allocation alloc : finalBestSolution.getAllocations()) {
                 if(!alloc.isPinned()) { // Find the first unpinned allocation
@@ -282,7 +260,6 @@ public class SchedulingService {
                     }
                 }
             }
-            // --- END FIX ---
             
             if (solvedSectionId == null) {
                  logger.warn("No unpinned allocations found in solution for {}. No schedules updated.", problemId);
@@ -355,7 +332,6 @@ public class SchedulingService {
         }
     }
 
-    // --- OPTIMIZED DURATION LOGIC FOR 2-5 HOUR SUBJECTS ---
     private List<Integer> determineSessionDurations(int totalHoursPerWeek) {
          List<Integer> durations = new ArrayList<>();
          int totalMinutes = totalHoursPerWeek * 60;
@@ -409,7 +385,6 @@ public class SchedulingService {
          return durations;
     }
     
-    // --- OPTIMIZED TIMESLOTS (Mon-Sat) with 1.5-hour slots for better scheduling ---
     private List<Timeslot> generateTimeslots() {
         List<Timeslot> timeslots = new ArrayList<>();
         long idCounter = 1;
@@ -486,24 +461,19 @@ public class SchedulingService {
         
         // Check rule: Same major subject + same teacher + different sections must be on different days
         // If violation found, attempt automatic reassignment
-        logger.info("@@@ VALIDATION: Checking for same major subject same teacher different sections violations...");
         boolean hasViolation = hasSameMajorSubjectSameTeacherDifferentSectionsSameDay(solution.getAllocations());
-        logger.info("@@@ VALIDATION RESULT: hasViolation={}", hasViolation);
         
         if (hasViolation) {
-            logger.warn("!!! VALIDATION: Same major subject with same teacher but different sections scheduled on same day!");
-            logger.info("!!! Attempting automatic reassignment to fix violation...");
+            logger.warn("Violation detected: Same major subject with same teacher but different sections scheduled on same day!");
+            logger.info("Attempting automatic reassignment to fix violation...");
             boolean fixed = fixSameMajorSubjectSameTeacherDifferentSectionsViolations(solution);
-            logger.info("@@@ REASSIGNMENT RESULT: fixed={}", fixed);
             if (!fixed) {
-                logger.error("!!! ERROR: Could not automatically fix violations!");
+                logger.error("Could not automatically fix violations!");
                 return true; // Still has violations after fix attempt
             } else {
-                logger.info("!!! SUCCESS: Violations automatically fixed by reassignment!");
+                logger.info("Violations automatically fixed by reassignment!");
                 // Re-validate to ensure no new conflicts were created
-                logger.info("@@@ RE-VALIDATING after reassignment...");
                 boolean stillHasViolations = validateSolutionForOverlaps(solution);
-                logger.info("@@@ RE-VALIDATION RESULT: stillHasViolations={}", stillHasViolations);
                 return stillHasViolations;
             }
         }
@@ -516,7 +486,6 @@ public class SchedulingService {
      * by reassigning one section to a different day with the same time slots
      */
     private boolean fixSameMajorSubjectSameTeacherDifferentSectionsViolations(ScheduleSolution solution) {
-        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: ENTRY");
         // #region agent log
         try {
             java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
@@ -526,7 +495,7 @@ public class SchedulingService {
         // #endregion
         
         if (solution.getAllocations() == null) {
-            logger.error("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: No allocations!");
+            logger.error("No allocations found for reassignment!");
             // #region agent log
             try {
                 java.io.FileWriter fw = new java.io.FileWriter("c:\\Users\\April Joy Lorca\\Documents\\SmartScheduler\\smartsched_app\\.cursor\\debug.log", true);
@@ -544,7 +513,6 @@ public class SchedulingService {
             return false;
         }
         
-        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: timeslotsCount={}", allTimeslots.size());
         
         // Group by teacher and subject code - include ALL allocations (pinned and unpinned) for detection
         // But we'll only reassign unpinned ones
@@ -557,7 +525,6 @@ public class SchedulingService {
                     Collectors.groupingBy(Allocation::getSubjectCode)
                 ));
         
-        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: teacherSubjectGroups={}", byTeacherAndSubject.size());
         
         boolean anyFixed = false;
         
@@ -576,8 +543,6 @@ public class SchedulingService {
                 Map<DayOfWeek, List<Allocation>> byDay = allocs.stream()
                     .collect(Collectors.groupingBy(a -> a.getTimeslot().getDayOfWeek()));
                 
-                logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: Grouped by day for subject {} teacher {}", 
-                           subjectEntry.getKey(), teacherEntry.getKey());
                 
                 // Find days with multiple sections
                 for (Map.Entry<DayOfWeek, List<Allocation>> dayEntry : byDay.entrySet()) {
@@ -586,8 +551,6 @@ public class SchedulingService {
                         .map(a -> a.getSection().getId())
                         .collect(Collectors.toSet());
                     
-                    logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: Day {} has sections {}", 
-                               dayEntry.getKey(), sectionsOnThisDay);
                     
                     if (sectionsOnThisDay.size() > 1) {
                         // Conflict found - need to reassign one section
@@ -596,14 +559,12 @@ public class SchedulingService {
                         
                         // Get the start time from one of the allocations (they should have same time)
                         LocalTime targetStartTime = dayAllocs.get(0).getTimeslot().getStartTime();
-                        logger.info("@@@ Target start time for reassignment: {}", targetStartTime);
                         
                         // Find a different day with the same start time available
                         DayOfWeek newDay = findAvailableDayForReassignment(
                             allTimeslots, dayEntry.getKey(), targetStartTime, 
                             solution.getAllocations(), dayAllocs.get(0).getTeacher().getId());
                         
-                        logger.info("@@@ Found new day for reassignment: {}", newDay);
                         
                         if (newDay == null) {
                             logger.error("!!! Could not find available day for reassignment!");
@@ -627,7 +588,6 @@ public class SchedulingService {
                             if (!unpinnedForSection.isEmpty()) {
                                 foundSectionId = currentSectionId;
                                 toReassign = unpinnedForSection;
-                                logger.info("@@@ Found unpinned section to reassign: {}", foundSectionId);
                                 break;
                             }
                         }
@@ -639,22 +599,12 @@ public class SchedulingService {
                             toReassign = dayAllocs.stream()
                                 .filter(a -> a.getSection().getId().equals(secondSectionId) && !a.isPinned())
                                 .collect(Collectors.toList());
-                            logger.info("@@@ Trying second section: {}", foundSectionId);
                         }
                         
                         if (foundSectionId == null || toReassign == null || toReassign.isEmpty()) {
-                            logger.warn("@@@ No unpinned allocations to reassign. All sections may be pinned.");
-                            logger.warn("@@@ Sections on this day: {}", sectionList);
-                            logger.warn("@@@ Pinned status: {}", dayAllocs.stream()
-                                .collect(Collectors.toMap(
-                                    a -> a.getSection().getId(),
-                                    Allocation::isPinned,
-                                    (v1, v2) -> v1
-                                )));
+                            logger.warn("No unpinned allocations to reassign. All sections may be pinned.");
                             continue; // Skip if all are pinned
                         }
-                        
-                        logger.info("@@@ Reassigning section: {} ({} allocations)", foundSectionId, toReassign.size());
                         
                         // Reassign each allocation
                         for (Allocation alloc : toReassign) {
@@ -677,7 +627,6 @@ public class SchedulingService {
             }
         }
         
-        logger.info("@@@ fixSameMajorSubjectSameTeacherDifferentSectionsViolations: EXIT, anyFixed={}", anyFixed);
         return anyFixed;
     }
     

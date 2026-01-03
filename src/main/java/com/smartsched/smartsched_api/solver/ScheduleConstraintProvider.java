@@ -504,12 +504,6 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 .penalize(HardSoftScore.of(100, 0), alloc -> {
                     Classroom classroom = alloc.getClassroom();
                     String classroomType = (classroom != null && classroom.getType() != null) ? classroom.getType().trim() : "";
-                    logger.warn("@@@ BSIT LAB CHECK: Subject: {} | Classroom: {} | Type: {} | isMajor: {} | Section Program: {}", 
-                               alloc.getSubjectCode(), 
-                               classroom != null ? classroom.getName() : "NULL",
-                               classroomType, 
-                               alloc.isMajor(),
-                               alloc.getSection() != null ? alloc.getSection().getProgram() : "NULL");
                     
                     // Check for various computer lab types - be more flexible
                     boolean isComputerLab = "Computer Laboratory".equalsIgnoreCase(classroomType) ||
@@ -521,12 +515,8 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                                           classroomType.toLowerCase().contains("laboratory");
                     
                     if (!isComputerLab) {
-                        logger.warn("@@@ PENALIZING BSIT LAB RULE for Subject: {} - Expected Computer Laboratory, got: {}", 
-                                   alloc.getSubjectCode(), classroomType);
                         return 10; // Much higher penalty
                     }
-                    logger.info("@@@ BSIT LAB RULE PASSED for Subject: {} - Correctly assigned to Computer Laboratory", 
-                               alloc.getSubjectCode());
                     return 0;
                 }).asConstraint("BSIT major subject must be in a computer laboratory");
      }
@@ -537,23 +527,14 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 .penalize(HardSoftScore.of(50, 0), alloc -> {
                     Classroom classroom = alloc.getClassroom();
                     String classroomType = (classroom != null && classroom.getType() != null) ? classroom.getType().trim() : "";
-                    logger.warn("@@@ GENERAL LAB CHECK: Subject: {} | Classroom: {} | Type: {} | isMajor: {}", 
-                               alloc.getSubjectCode(), 
-                               classroom != null ? classroom.getName() : "NULL",
-                               classroomType, 
-                               alloc.isMajor());
                     
                     // Check for various lab types
                     boolean isLab = classroomType.toLowerCase().contains("laboratory") ||
                                   classroomType.toLowerCase().contains("lab");
                     
                     if (!isLab) {
-                        logger.warn("@@@ PENALIZING GENERAL LAB RULE for Subject: {} - Expected Laboratory, got: {}", 
-                                   alloc.getSubjectCode(), classroomType);
                         return 1;
                     }
-                    logger.info("@@@ GENERAL LAB RULE PASSED for Subject: {} - Correctly assigned to Laboratory", 
-                               alloc.getSubjectCode());
                     return 0;
                 }).asConstraint("Major subject must be in a laboratory");
     }
@@ -567,11 +548,6 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                 .penalize(HardSoftScore.of(50, 0), alloc -> {
                     Classroom classroom = alloc.getClassroom();
                     String classroomType = (classroom != null && classroom.getType() != null) ? classroom.getType().trim() : "";
-                    logger.warn("@@@ NON-MAJOR LECTURE CHECK: Subject: {} | Classroom: {} | Type: {} | isMajor: {}", 
-                               alloc.getSubjectCode(), 
-                               classroom != null ? classroom.getName() : "NULL",
-                               classroomType, 
-                               alloc.isMajor());
                     
                     // Check for various lecture room types
                     boolean isLectureRoom = "Lecture Room".equalsIgnoreCase(classroomType) ||
@@ -580,19 +556,14 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                                           classroomType.toLowerCase().contains("classroom");
                     
                     if (!isLectureRoom) {
-                        logger.warn("@@@ PENALIZING NON-MAJOR LECTURE ROOM RULE for Subject: {} - Expected Lecture Room, got: {}", 
-                                   alloc.getSubjectCode(), classroomType);
                         return 1;
                     }
-                    logger.info("@@@ NON-MAJOR LECTURE RULE PASSED for Subject: {} - Correctly assigned to Lecture Room", 
-                               alloc.getSubjectCode());
                     return 0;
                 }).asConstraint("Non-major subject should be in a lecture room");
     }
 
     private Constraint scheduleEndTimeLimit(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Allocation.class)
-                // --- ADDED !alloc.isPinned() ---
                 .filter(alloc -> !alloc.isPinned() && alloc.getTimeslot() != null)
                 .penalize(HardSoftScore.ONE_HARD, alloc -> {
                      try {
@@ -618,11 +589,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     // Only penalize if they are different allocations of the same subject on the same day
                     return !alloc1.getId().equals(alloc2.getId());
                 })
-                .penalize(HardSoftScore.of(200, 0), (alloc1, alloc2) -> {
-                    logger.warn("@@@ NON-MAJOR SAME DAY PENALTY: {} scheduled on same day {}", 
-                               alloc1.getSubjectCode(), alloc1.getTimeslot().getDayOfWeek());
-                    return 1;
-                })
+                .penalize(HardSoftScore.of(200, 0), (alloc1, alloc2) -> 1)
                 .asConstraint("Non-major subjects should be on different days");
     }
 
@@ -641,13 +608,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     boolean sameDay = alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
                     return !sameTime || sameDay; // Penalize if not same time OR if same day
                 })
-                .penalize(HardSoftScore.of(300, 0), (alloc1, alloc2) -> {
-                    logger.warn("@@@ NON-MAJOR WRONG PATTERN: {} at {} on {} vs {} on {}", 
-                               alloc1.getSubjectCode(), 
-                               alloc1.getTimeslot().getStartTime(), alloc1.getTimeslot().getDayOfWeek(),
-                               alloc2.getTimeslot().getStartTime(), alloc2.getTimeslot().getDayOfWeek());
-                    return 1;
-                })
+                .penalize(HardSoftScore.of(300, 0), (alloc1, alloc2) -> 1)
                 .asConstraint("Force non-major subjects same time different days");
     }
 
@@ -665,12 +626,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                            !alloc1.getId().equals(alloc2.getId()) &&
                            !alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
                 })
-                .reward(HardSoftScore.of(0, 10), (alloc1, alloc2) -> {
-                    logger.info("@@@ NON-MAJOR REWARD: {} and {} at same time {} on different days", 
-                               alloc1.getSubjectCode(), alloc2.getSubjectCode(), 
-                               alloc1.getTimeslot().getStartTime());
-                    return 1;
-                })
+                .reward(HardSoftScore.of(0, 10), (alloc1, alloc2) -> 1)
                 .asConstraint("Reward non-major subjects for same time different days");
     }
 
@@ -689,13 +645,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     boolean sameDay = alloc1.getTimeslot().getDayOfWeek().equals(alloc2.getTimeslot().getDayOfWeek());
                     return !sameDay; // Penalize if not on same day
                 })
-                .penalize(HardSoftScore.of(500, 0), (alloc1, alloc2) -> {
-                    logger.warn("@@@ MAJOR DIFFERENT DAY PENALTY: {} at {} on {} vs {} on {}", 
-                               alloc1.getSubjectCode(), 
-                               alloc1.getTimeslot().getStartTime(), alloc1.getTimeslot().getDayOfWeek(),
-                               alloc2.getTimeslot().getStartTime(), alloc2.getTimeslot().getDayOfWeek());
-                    return 1;
-                })
+                .penalize(HardSoftScore.of(500, 0), (alloc1, alloc2) -> 1)
                 .asConstraint("Force major subjects same day");
     }
 
@@ -723,13 +673,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     boolean sequential = endTime1.equals(start2) || endTime2.equals(start1);
                     return !sequential; // Penalize if not sequential
                 })
-                .penalize(HardSoftScore.of(300, 0), (alloc1, alloc2) -> {
-                    logger.warn("@@@ MAJOR NON-SEQUENTIAL PENALTY: {} for section {} at {} vs {} on {}", 
-                               alloc1.getSubjectCode(), alloc1.getSection().getSectionName(),
-                               alloc1.getTimeslot().getStartTime(),
-                               alloc2.getTimeslot().getStartTime(), alloc1.getTimeslot().getDayOfWeek());
-                    return 1;
-                })
+                .penalize(HardSoftScore.of(300, 0), (alloc1, alloc2) -> 1)
                 .asConstraint("Force major subjects sequential");
     }
 
@@ -748,11 +692,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     LocalTime endTime1 = alloc1.getTimeslot().getStartTime().plusMinutes(alloc1.getDurationInMinutes());
                     return endTime1.equals(alloc2.getTimeslot().getStartTime());
                 })
-                .reward(HardSoftScore.of(0, 10), (alloc1, alloc2) -> {
-                    logger.info("@@@ MAJOR REWARD: {} sessions sequential on {}", 
-                               alloc1.getSubjectCode(), alloc1.getTimeslot().getDayOfWeek());
-                    return 1;
-                })
+                .reward(HardSoftScore.of(0, 10), (alloc1, alloc2) -> 1)
                 .asConstraint("Reward major subjects for being sequential on same day");
     }
 
@@ -1162,7 +1102,7 @@ public class ScheduleConstraintProvider implements ConstraintProvider {
                     // #endregion
                     return Math.abs(count - expected); // Penalty based on deviation from expected
                 })
-                .asConstraint("Teacher major subjects AM-PM distribution (2 AM, 4 PM)");
+                .asConstraint("Teacher major subjects AM-PM distribution 2 AM 4 PM");
     }
     
     /**
